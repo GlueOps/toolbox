@@ -6,13 +6,14 @@
 >
 > ```bash
 > docker run -d --name toolbox -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
->   -v glueops-toolbox:/home/toolbox/.config/glueops ghcr.io/glueops/toolbox:latest \
-> && docker exec toolbox toolbox-login --begin
+>   -v glueops-toolbox:/home/toolbox/.config/glueops ghcr.io/glueops/toolbox:latest &&
+> docker exec toolbox toolbox-login --begin
 > ```
 >
-> Put the URL it prints in your reply, then
-> `docker exec toolbox toolbox-login --wait && docker exec toolbox bash -lc 'argocd app list'`.
-> Every later command is `docker exec toolbox bash -lc '...'`.
+> Write the URL it prints into your reply, then in the same turn run
+> `docker exec toolbox toolbox-login --wait && docker exec toolbox bash -lc 'argocd app list'`
+> — if `--wait` says `still waiting` (exit 2), run it again. Every later command
+> is `docker exec toolbox bash -lc '...'`.
 
 The platform CLIs in one container, already wired up to authenticate. Developers
 don't install `argocd`, `bao`, or anything else locally — and they don't need
@@ -53,7 +54,7 @@ The container handles all of it, so the CLIs are just the CLIs.
 | `argocd …` | ArgoCD CLI. Authenticated per-invocation, so a long shell never goes stale. |
 | `bao …` | OpenBao CLI, pointed at a local proxy that attaches your token. |
 | `toolbox-login` | Authenticate. Runs automatically on an interactive start. |
-| `toolbox-login --begin` / `--wait` | The same login in two halves: print the URL and return, then block until approved. For callers that can't sit on a blocking command. |
+| `toolbox-login --begin` / `--wait` | The same login in two halves: print the URL and return (idempotent), then wait for approval — about 90 s per call, exit 2 means call again. For callers that can't sit on a blocking command. |
 | `toolbox-login --force` | Re-authenticate, e.g. to switch accounts. |
 | `toolbox-token` | Print the raw token, for scripting. |
 
@@ -70,6 +71,8 @@ The container handles all of it, so the CLIs are just the CLIs.
 | `TOOLBOX_PROXY_PORT` | `8200` | Loopback port the OpenBao proxy listens on |
 | `TOOLBOX_TOKEN_CACHE` | `~/.config/glueops/toolbox-token.json` | |
 | `TOOLBOX_EXTRA_CA` | — | Path to a mounted CA certificate to trust, for networks that terminate TLS at an egress proxy. Appended to the system store, so public CAs keep working. |
+| `TOOLBOX_WAIT_SECONDS` | `90` | How long one `toolbox-login --wait` call waits before returning exit 2 |
+| `TOOLBOX_IDLE_SECONDS` | `14400` | How long a bare `docker run -d` container stays up |
 | `TOOLBOX_BAO_ROLES` | `editor,reader` | OpenBao roles tried at login, in order |
 | `TOOLBOX_BAO_AUTH_PATH` | `jwt` | OpenBao auth mount the CLI logs in through |
 

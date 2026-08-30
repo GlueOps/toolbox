@@ -12,48 +12,61 @@ Two commands. Everything below them is reference — read it only if one fails.
 docker run -d --name toolbox \
   -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
   -v glueops-toolbox:/home/toolbox/.config/glueops \
-  ghcr.io/glueops/toolbox:latest \
-&& docker exec toolbox toolbox-login --begin
+  ghcr.io/glueops/toolbox:latest &&
+docker exec toolbox toolbox-login --begin
 ```
 
-That prints a URL. **Put it in your reply now** — the human approves it in a
-browser, they cannot approve what they have not seen, and the code expires five
-minutes after it is issued. If it prints `Already authenticated.` instead, there
-is nothing to approve.
+That prints a URL. **Write it, and the code, into your message text now**, then
+run step 2 in the same turn. The human approves it in a browser; they cannot
+approve what they have not seen, and the code expires five minutes after it is
+issued. Never chain `--begin` and `--wait` into one command — the human must see
+the URL before you start waiting on it. If step 1 prints `Already authenticated.`
+there is nothing to approve; go straight to step 2.
 
 ```bash
 # 2. wait for the approval, then run whatever you were asked
-docker exec toolbox toolbox-login --wait \
-&& docker exec toolbox bash -lc 'argocd app list'
+docker exec toolbox toolbox-login --wait &&
+docker exec toolbox bash -lc 'argocd app list'
 ```
 
-`--wait` blocks until the human approves (up to five minutes) and then logs you
-into OpenBao as well. Every later command is `docker exec toolbox bash -lc '...'`
-— the `bash -lc` is required, see the command reference below.
+`--wait` returns after about 90 seconds if the human hasn't approved yet, so it
+fits under your tool's command timeout: exit code 2 and `still waiting` mean run
+it again, nothing is wrong. Once approved it logs you into OpenBao too. Every
+later command is `docker exec toolbox bash -lc '...'` — the `bash -lc` matters,
+see the command reference below.
 
 ## If step 1 fails
 
+- **`container … is not running`** — the entrypoint exited. `docker logs toolbox`
+  says why; almost always `TOOLBOX_CAPTAIN_DOMAIN` is missing or empty.
 - **`Cannot connect to the Docker daemon`** — if `dockerd` is installed and you
   are root, start it and move on: `nohup dockerd >/tmp/dockerd.log 2>&1 &` then
   retry once `docker info` succeeds. Don't survey other container runtimes.
 - **The image pull fails behind a proxy** — dockerd needs the proxy too:
-  `HTTPS_PROXY=<proxy> nohup dockerd ...`. Pass it into the container as well
-  with `-e HTTPS_PROXY=<proxy> -e NO_PROXY=127.0.0.1,localhost`, and if the proxy
-  listens on the host's loopback add `--network host` so the container can reach
-  it.
-- **TLS errors inside the container** — your environment terminates TLS at an
-  egress proxy and the container doesn't trust its CA. Don't disable
+  `HTTPS_PROXY="$HTTPS_PROXY" nohup dockerd …`. Pass it into the container **by
+  name, never by value** — proxy URLs often carry credentials, and a value lands
+  in `ps`, the container config and your transcript:
+  `-e HTTPS_PROXY -e HTTP_PROXY -e NO_PROXY=127.0.0.1,localhost`. If the proxy
+  listens on the host's loopback, add `--add-host=host.docker.internal:host-gateway`
+  and point the variable at `http://host.docker.internal:<port>`. Do **not** use
+  `--network host`: the container runs a proxy that attaches your credential to
+  whatever it forwards, and host networking publishes it to every local process.
+- **TLS errors** (`certificate verify failed`) — your environment terminates TLS
+  at an egress proxy and the container doesn't trust its CA. Don't disable
   verification; mount the CA and add to step 1:
 
   ```bash
     -v /path/to/proxy-ca.crt:/ca.crt:ro -e TOOLBOX_EXTRA_CA=/ca.crt \
   ```
 
-  It is appended to the system trust store, so public CAs keep working. The CA
-  is usually already on the host — `/usr/local/share/ca-certificates/`,
-  `/etc/ssl/certs/`, or wherever your environment's own docs say.
-- **`the code expired`** from `--wait` — run `toolbox-login --begin` again and
-  show the new URL.
+  It is appended to the system trust store, so public CAs keep working, and the
+  login honours it directly. The CA is usually already on the host —
+  `/usr/local/share/ca-certificates/`, `/etc/ssl/certs/`, or wherever your
+  environment's own docs say.
+- **`the code expired`** or **`login access_denied`** from `--wait` — run
+  `toolbox-login --begin` again and show the new URL.
+- **Told to log in as someone else** — `toolbox-login --begin --force` discards
+  the cached identity and mints a fresh URL.
 
 ## Do not
 
@@ -111,9 +124,10 @@ into and no way to read the device URL back out. Detached plus `docker exec` is
 the whole reason for the shape of step 1.
 
 **`--begin` and `--wait` are two halves of one login.** `--begin` asks Dex for a
-device code, saves it, prints the URL and returns; `--wait` polls Dex with that
-code until the human approves. Both are safe to rerun — if you're already logged
-in they say so and exit 0 — so there's no state for you to track.
+device code, saves it, prints the URL and returns; run it twice and you get the
+same URL back, not a second one. `--wait` polls Dex with that code, for about 90
+seconds per call (`TOOLBOX_WAIT_SECONDS`), and exits 2 if the human hasn't
+approved yet — just call it again. Both are safe to rerun when already logged in.
 
 **`bash -lc` is required** for every command. `docker exec` bypasses the
 ENTRYPOINT, and the CLIs are configured in `/etc/toolbox-env.sh`, which login
@@ -121,7 +135,7 @@ shells source. `docker exec toolbox argocd app list` will not work.
 
 **`Already authenticated.`** with no URL means the cached volume still holds a
 valid token. Skip to the command. Codes expire after five minutes; if one lapses,
-rerun `toolbox-login` and show the new URL.
+rerun `toolbox-login --begin`, show the new URL, then `--wait` again.
 
 ## Commands
 
@@ -212,4 +226,6 @@ non-zero as "check which", not as "there is drift".
   server-side — writes return `403 permission denied`. Worth setting on the run
   command when you know the task is read-only, so a mistake cannot land.
 - **Clean up with `docker rm -f toolbox`,** but leave the volume: it holds the
-  login, so the human isn't asked to approve again next time.
+  login, so the human isn't asked to approve again next time. (An abandoned
+  container stops itself after four hours — `TOOLBOX_IDLE_SECONDS` — but don't
+  rely on that.)

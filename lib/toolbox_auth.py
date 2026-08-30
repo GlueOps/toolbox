@@ -12,6 +12,7 @@ stdlib only.
 
 import json
 import os
+import ssl
 import stat
 import sys
 import time
@@ -58,6 +59,14 @@ def log(msg):
 # seconds of network debugging; retrying briefly makes that a non-event.
 TRANSIENT_RETRIES = 6
 TRANSIENT_BACKOFF = 1.0
+_SSL = None  # built lazily: ssl_context() logs, and log() is defined below
+
+
+def _ssl():
+    global _SSL
+    if _SSL is None:
+        _SSL = ssl_context()
+    return _SSL
 
 
 def _post(path, data):
@@ -67,7 +76,7 @@ def _post(path, data):
         req = urllib.request.Request(dex_url() + path, data=body, method="POST")
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=30, context=_ssl()) as r:
                 return r.status, json.load(r)
         except urllib.error.HTTPError as e:
             raw = e.read()
@@ -89,14 +98,44 @@ def _read_cache():
         return {}
 
 
+def _write_private_json(path, obj):
+    """Atomic, 0600 from the first byte, and safe with concurrent writers - the
+    proxy, toolbox-token and --wait can all refresh at once. A fixed temp name
+    would let one writer's os.replace move another's half-written file into
+    place; a mode set after close would leave a world-readable window."""
+    import tempfile
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".toolbox-")
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _write_cache(obj):
-    p = cache_path()
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    tmp = p + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f)
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # it is a credential
-    os.replace(tmp, p)
+    _write_private_json(cache_path(), obj)
+
+
+def ssl_context():
+    """The trust store every HTTPS call here should use. Honours TOOLBOX_EXTRA_CA
+    directly rather than relying on SSL_CERT_FILE from /etc/toolbox-env.sh, which
+    only login shells source - `docker exec toolbox toolbox-login` is not one."""
+    ctx = ssl.create_default_context()
+    extra = os.environ.get("TOOLBOX_EXTRA_CA")
+    if extra and os.path.isfile(extra):
+        try:
+            ctx.load_verify_locations(cafile=extra)
+        except (ssl.SSLError, OSError) as e:
+            log(f"toolbox: ignoring TOOLBOX_EXTRA_CA={extra}: {e}")
+    return ctx
 
 
 def _expiry(token):
@@ -136,13 +175,26 @@ def pending_path():
     return cache_path() + ".pending"
 
 
-def begin_device_flow():
+# A pending code with less time than this left is not worth handing out again.
+PENDING_REUSE_MIN = 30
+
+
+def begin_device_flow(force=False):
     """Ask Dex for a device code and persist it. Returns the pending record.
 
     Split from the wait so a caller can print the URL and return immediately -
     an agent driving this over docker exec needs the URL in hand within one
     command, not after a sleep-and-hope.
+
+    Idempotent: if a code is already pending and still has time on it, hand back
+    the same one. Minting a fresh code on every call would orphan the URL the
+    human already has open - they approve it, and --wait polls a different code
+    forever.
     """
+    if not force:
+        live = _read_pending()
+        if live and live.get("expires_at", 0) - time.time() > PENDING_REUSE_MIN:
+            return live
     status, body = _post(
         "/device/code",
         {
@@ -159,12 +211,9 @@ def begin_device_flow():
         "url": body["verification_uri_complete"],
         "interval": body.get("interval", 5),
         "expires_at": time.time() + body.get("expires_in", 300),
+        "force": force,
     }
-    p = pending_path()
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w") as f:
-        json.dump(pending, f)
-    os.chmod(p, stat.S_IRUSR | stat.S_IWUSR)
+    _write_private_json(pending_path(), pending)
     return pending
 
 
@@ -176,11 +225,28 @@ def _read_pending():
         return None
 
 
-def wait_device_flow(pending):
-    """Poll Dex until the human approves. Returns the token response."""
+def _clear_pending():
+    try:
+        os.remove(pending_path())
+    except OSError:
+        pass
+
+
+def wait_device_flow(pending, max_seconds=None):
+    """Poll Dex until the human approves.
+
+    Returns the token response, or None if max_seconds elapsed first with the
+    code still valid - the caller can simply call again. Terminal failures
+    (expired, denied) exit, and drop the pending record so the next --begin
+    mints a fresh code instead of re-polling a dead one.
+
+    Polls before sleeping: by the time --wait runs, --begin was at least one
+    agent turn ago and the human has often already approved, so a leading
+    sleep is a guaranteed five seconds of nothing.
+    """
     interval = pending.get("interval", 5)
+    stop = None if max_seconds is None else time.time() + max_seconds
     while time.time() < pending["expires_at"]:
-        time.sleep(interval)
         status, tok = _post(
             "/token",
             {
@@ -190,19 +256,19 @@ def wait_device_flow(pending):
             },
         )
         if status == 200 and tok.get("id_token"):
-            try:
-                os.remove(pending_path())
-            except OSError:
-                pass
+            _clear_pending()
             return tok
         err = tok.get("error")
-        if err == "authorization_pending":
-            continue
         if err == "slow_down":
             interval += 5
-            continue
-        sys.exit(f"toolbox: device flow failed: {tok}")
+        elif err != "authorization_pending":
+            _clear_pending()
+            sys.exit(f"toolbox: login {err or 'failed'}: {tok.get('error_description') or tok} - run toolbox-login --begin again")
+        if stop is not None and time.time() + interval >= stop:
+            return None
+        time.sleep(interval)
 
+    _clear_pending()
     sys.exit("toolbox: the code expired before it was approved - run toolbox-login --begin again")
 
 

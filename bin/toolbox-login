@@ -2,9 +2,9 @@
 """Authenticate the toolbox to the GlueOps platform.
 
     toolbox-login            # interactive: prints the URL, waits for approval
-    toolbox-login --begin    # print the URL and return immediately
-    toolbox-login --wait     # block until the human has approved
-    toolbox-login --force    # always re-authenticate (e.g. switch account)
+    toolbox-login --begin    # print the URL and return immediately (idempotent)
+    toolbox-login --wait     # wait for approval; exits 2 after ~90s if not yet, just rerun
+    toolbox-login --force    # discard the cached identity first (combine with --begin)
 
 Uses the OIDC device flow, so there is no loopback listener and no redirect URI:
 you open a URL on whatever machine has your browser and approve with GitHub. The
@@ -16,7 +16,9 @@ second, relays it, then runs --wait. Both are safe to run when already logged in
 
 Also exchanges the token for an OpenBao token, so `bao` is usable straight away.
 """
+import os
 import sys
+import time
 
 sys.path.insert(0, "/opt/toolbox/lib")
 import toolbox_auth  # noqa: E402
@@ -32,35 +34,55 @@ def bao(token):
         print("OpenBao: not logged in (argocd is unaffected).", file=sys.stderr)
 
 
-def already(token):
+def already(token, exchange):
     print("Already authenticated.", file=sys.stderr)
-    bao(token)
+    if exchange:
+        bao(token)
     return 0
 
 
-def begin():
-    token = toolbox_auth.get_token(interactive=False)
-    if token:
-        return already(token)
-    pending = toolbox_auth.begin_device_flow()
+def begin(force):
+    if force:
+        # Discard the cached identity so --wait saves the new one cleanly.
+        toolbox_auth._write_cache({})
+    elif toolbox_auth.get_token(interactive=False):
+        # No OpenBao exchange here: it would race the proxy that the entrypoint
+        # is still starting, and --wait does it anyway.
+        return already(None, exchange=False)
+    pending = toolbox_auth.begin_device_flow(force=force)
     # URL first and on its own line, so it can be grabbed with `head -1`. Flushed
     # before the stderr line, or a non-tty stdout buffers and the merged output
     # an agent sees comes out in the wrong order.
     print(pending["url"], flush=True)
-    print(f"code {pending['user_code']} - expires in 5 minutes", file=sys.stderr)
+    left = max(0, int(pending["expires_at"] - time.time()))
+    print(f"code {pending['user_code']} - expires in {left // 60} min {left % 60} s", file=sys.stderr)
     return 0
 
 
+def wait_seconds():
+    # Bounded so the call fits under the timeouts agent tools give a command
+    # (commonly 120 s). Exit code 2 means "not yet - call again".
+    try:
+        return int(os.environ.get("TOOLBOX_WAIT_SECONDS", "90"))
+    except ValueError:
+        return 90
+
+
 def wait():
-    token = toolbox_auth.get_token(interactive=False)
-    if token:
-        return already(token)
     pending = toolbox_auth._read_pending()
     if not pending:
+        token = toolbox_auth.get_token(interactive=False)
+        if token:
+            return already(token, exchange=True)
         print("toolbox: no login in progress - run 'toolbox-login --begin' first", file=sys.stderr)
         return 1
-    tok = toolbox_auth.wait_device_flow(pending)
-    token = toolbox_auth.save_token(tok, toolbox_auth._read_cache())
+    tok = toolbox_auth.wait_device_flow(pending, max_seconds=wait_seconds())
+    if tok is None:
+        left = max(0, int(pending["expires_at"] - time.time()))
+        print(f"still waiting for approval - run 'toolbox-login --wait' again (code valid for {left} more seconds)", file=sys.stderr)
+        return 2
+    cache = {} if pending.get("force") else toolbox_auth._read_cache()
+    token = toolbox_auth.save_token(tok, cache)
     print("Authenticated.", file=sys.stderr)
     bao(token)
     return 0
@@ -69,7 +91,7 @@ def wait():
 def interactive(force):
     token = None if force else toolbox_auth.get_token(interactive=False)
     if token:
-        return already(token)
+        return already(token, exchange=True)
     token = toolbox_auth.get_token(force_login=force)
     print("Authenticated.", file=sys.stderr)
     bao(token)
@@ -81,11 +103,12 @@ def main():
     if "--help" in a or "-h" in a:
         print(__doc__)
         return 0
+    force = "--force" in a
     if "--begin" in a:
-        return begin()
+        return begin(force)
     if "--wait" in a:
         return wait()
-    return interactive("--force" in a)
+    return interactive(force)
 
 
 if __name__ == "__main__":
