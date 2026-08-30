@@ -53,6 +53,7 @@ The container handles all of it, so the CLIs are just the CLIs.
 | `ARGOCD_SERVER` | `argocd.$DOMAIN` | |
 | `TOOLBOX_PROXY_PORT` | `8200` | Loopback port the OpenBao proxy listens on |
 | `TOOLBOX_TOKEN_CACHE` | `~/.config/glueops/toolbox-token.json` | |
+| `TOOLBOX_BAO_ROLES` | `editor-jwt,reader-jwt` | OpenBao roles tried at login, in order |
 
 ## How it works
 
@@ -65,11 +66,17 @@ rather than daily.
 **ArgoCD** accepts that token directly (it's configured with the toolbox audience
 in `allowedAudiences`), so one token satisfies both the edge and ArgoCD itself.
 
-It has to be passed as `-H "Authorization: …"`, though — **not** `ARGOCD_AUTH_TOKEN`.
-The CLI sends that one in a `Token:` header, which oauth2-proxy doesn't read, so
-the edge sees no credential and bounces the request to a login page; the CLI then
-fails with the rather unhelpful `rpc error: unexpected EOF`. `-H` is a global flag,
-so the wrapper just prepends it and sets the token fresh on every call.
+It needs to go in **two** headers, because each side reads only its own:
+
+| | header | read by |
+|---|---|---|
+| `ARGOCD_AUTH_TOKEN` | `Token: <jwt>` | ArgoCD |
+| `-H "Authorization: …"` | `Authorization: Bearer <jwt>` | oauth2-proxy |
+
+Send only the env var and the edge sees no credential, redirects to a login page,
+and the CLI reports `rpc error: unexpected EOF`. Send only `-H` and you get past
+the edge with `Token:` empty, so ArgoCD answers `Unauthenticated: no session
+information`. The wrapper sets both, fresh on every call.
 
 **OpenBao** can't work that way. Its own credential travels in `X-Vault-Token`,
 and the edge needs an `Authorization` bearer as well. `bao` has a `-header` flag,
@@ -85,6 +92,13 @@ bao -header="…" kv get secret/foo     ✗   no global flag position
 path, no wrapper can place it correctly in general. So instead the container runs
 a small loopback proxy that adds the header and forwards upstream, and points
 `BAO_ADDR` at it. `bao` then needs no flags at all and scripts work unmodified.
+
+`toolbox-login` also exchanges your Dex token for an OpenBao token, so `bao` is
+usable immediately. It posts to the login endpoint directly rather than running
+`bao login -method=jwt`, because the OpenBao CLI registers no `jwt` method — only
+`oidc`, which is the browser redirect flow. Roles are tried most-privileged first
+(`TOOLBOX_BAO_ROLES`, default `editor-jwt,reader-jwt`); which one you actually get
+is decided by the role's `bound_claims`.
 
 The proxy binds to `127.0.0.1` only — it attaches your credential to whatever it
 forwards, so it must never be exposed.

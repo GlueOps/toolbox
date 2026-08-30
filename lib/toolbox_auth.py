@@ -191,3 +191,68 @@ def get_token(force_login=False, interactive=True):
 
     _write_cache(tok)
     return tok["id_token"]
+
+
+# ---------------------------------------------------------------------------
+# OpenBao
+# ---------------------------------------------------------------------------
+# OpenBao needs its own token; the Dex token only gets us past the edge. Exchange
+# one for the other so a single `toolbox-login` leaves both CLIs usable.
+#
+# This posts to the login endpoint directly rather than using `bao login`: the
+# OpenBao CLI registers no `jwt` auth method (only `oidc`, which is the browser
+# redirect flow), so `-method=jwt` fails with "Unknown auth method".
+
+
+def bao_roles():
+    return [
+        r.strip()
+        for r in _env("TOOLBOX_BAO_ROLES", "editor-jwt,reader-jwt").split(",")
+        if r.strip()
+    ]
+
+
+def bao_addr():
+    return _env("BAO_ADDR", "http://127.0.0.1:8200")
+
+
+def bao_token_path():
+    return os.path.expanduser(_env("BAO_TOKEN_PATH", "~/.vault-token"))
+
+
+def bao_login(id_token):
+    """Exchange the Dex token for an OpenBao token. Returns the role used, or None.
+
+    Roles are tried most-privileged first; the role's bound_claims decide which
+    one a given user is actually entitled to, so a rejection here is expected and
+    not an error.
+    """
+    last = None
+    for role in bao_roles():
+        body = json.dumps({"role": role, "jwt": id_token}).encode()
+        req = urllib.request.Request(
+            bao_addr() + "/v1/auth/oidc/login", data=body, method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.load(r)
+        except urllib.error.HTTPError as e:
+            last = e.read().decode(errors="replace")[:200]
+            continue
+        except urllib.error.URLError as e:
+            log(f"toolbox: cannot reach OpenBao at {bao_addr()}: {e.reason}")
+            return None
+
+        tok = (data.get("auth") or {}).get("client_token")
+        if tok:
+            p = bao_token_path()
+            os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+            with open(p, "w") as f:
+                f.write(tok)
+            os.chmod(p, stat.S_IRUSR | stat.S_IWUSR)
+            return role
+
+    if last:
+        log(f"toolbox: OpenBao login failed for {bao_roles()}: {last}")
+    return None
