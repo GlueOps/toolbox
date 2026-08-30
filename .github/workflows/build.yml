@@ -18,7 +18,7 @@ jobs:
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       # Apple Silicon is a first-class target for this image: developers run it on
       # their laptops. QEMU lets the amd64 runner build the arm64 variant too.
