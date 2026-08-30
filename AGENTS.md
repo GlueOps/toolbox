@@ -4,10 +4,33 @@ This repository builds a container that gives you working `argocd` and `bao`
 against a GlueOps cluster. See [README.md](README.md) for what it is and how a
 human uses it.
 
-You already know those CLIs. This file is only about getting authenticated, which
-is the part you cannot work out from the code. Follow it end to end before running
-anything — the whole sequence is here, so nobody should have to explain it to you
-in a prompt.
+This file is only about getting authenticated, which is the part you cannot work
+out from the code. Follow it end to end before running anything — the whole
+sequence is here, so nobody should have to explain it to you in a prompt.
+
+## The two tools
+
+**`argocd`** — [argoproj/argo-cd](https://github.com/argoproj/argo-cd), GitOps
+continuous delivery for Kubernetes. It manages `Application` resources that sync a
+cluster to git. The CLI talks to a central API server, not to the Kubernetes API,
+so it does not need kubeconfig. Currently `v3.3.12` in this image.
+
+**`bao`** — [openbao/openbao](https://github.com/openbao/openbao), a secrets
+manager. It is an open-source fork of HashiCorp Vault, so almost everything you
+know about Vault applies: same API shape, same path layout (`secret/`, `sys/`,
+`auth/`), same policy model. Two differences that will trip you up:
+
+- The binary is `bao`, not `vault`, and the environment variables are `BAO_*`
+  (`BAO_ADDR`, `BAO_TOKEN`). The `VAULT_*` names still work, and `BAO_*` wins if
+  both are set — this container sets both, so either will do.
+- It has diverged from Vault in places. Don't assume a Vault feature exists; check
+  first. For example the CLI registers no `jwt` auth method, so
+  `bao login -method=jwt` fails even though the `jwt` auth backend is mounted and
+  works over the API.
+
+Currently `2.4.4` in this image. Its docs are at
+[openbao.org/docs](https://openbao.org/docs/), and where they are thin the Vault
+documentation is usually still correct.
 
 The one thing you can't do is authenticate. Login is a device flow: a human opens
 a URL and approves with GitHub. Start it, **give the URL to the person you're
