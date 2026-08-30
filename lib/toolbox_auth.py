@@ -12,6 +12,7 @@ stdlib only.
 
 import json
 import os
+import ssl
 import stat
 import sys
 import time
@@ -52,21 +53,41 @@ def log(msg):
     print(msg, file=sys.stderr)
 
 
+# A freshly started container can lose its first DNS lookup or two while the
+# resolver settles, and an agent driving this runs --begin the instant the
+# container is up. Failing on the first miss sent one straight into twenty
+# seconds of network debugging; retrying briefly makes that a non-event.
+TRANSIENT_RETRIES = 6
+TRANSIENT_BACKOFF = 1.0
+_SSL = None  # built lazily: ssl_context() logs, and log() is defined below
+
+
+def _ssl():
+    global _SSL
+    if _SSL is None:
+        _SSL = ssl_context()
+    return _SSL
+
+
 def _post(path, data):
     body = urllib.parse.urlencode(data).encode()
-    req = urllib.request.Request(dex_url() + path, data=body, method="POST")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.status, json.load(r)
-    except urllib.error.HTTPError as e:
-        raw = e.read()
+    last = None
+    for attempt in range(TRANSIENT_RETRIES):
+        req = urllib.request.Request(dex_url() + path, data=body, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
-            return e.code, json.loads(raw)
-        except ValueError:
-            return e.code, {"error": raw.decode(errors="replace")[:200]}
-    except urllib.error.URLError as e:
-        sys.exit(f"toolbox: cannot reach Dex at {dex_url()}: {e.reason}")
+            with urllib.request.urlopen(req, timeout=30, context=_ssl()) as r:
+                return r.status, json.load(r)
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return e.code, json.loads(raw)
+            except ValueError:
+                return e.code, {"error": raw.decode(errors="replace")[:200]}
+        except (urllib.error.URLError, OSError) as e:
+            last = getattr(e, "reason", e)
+            time.sleep(TRANSIENT_BACKOFF)
+    sys.exit(f"toolbox: cannot reach Dex at {dex_url()} after {TRANSIENT_RETRIES} attempts: {last}")
 
 
 def _read_cache():
@@ -77,14 +98,44 @@ def _read_cache():
         return {}
 
 
+def _write_private_json(path, obj):
+    """Atomic, 0600 from the first byte, and safe with concurrent writers - the
+    proxy, toolbox-token and --wait can all refresh at once. A fixed temp name
+    would let one writer's os.replace move another's half-written file into
+    place; a mode set after close would leave a world-readable window."""
+    import tempfile
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".toolbox-")
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _write_cache(obj):
-    p = cache_path()
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    tmp = p + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f)
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # it is a credential
-    os.replace(tmp, p)
+    _write_private_json(cache_path(), obj)
+
+
+def ssl_context():
+    """The trust store every HTTPS call here should use. Honours TOOLBOX_EXTRA_CA
+    directly rather than relying on SSL_CERT_FILE from /etc/toolbox-env.sh, which
+    only login shells source - `docker exec toolbox toolbox-login` is not one."""
+    ctx = ssl.create_default_context()
+    extra = os.environ.get("TOOLBOX_EXTRA_CA")
+    if extra and os.path.isfile(extra):
+        try:
+            ctx.load_verify_locations(cafile=extra)
+        except (ssl.SSLError, OSError) as e:
+            log(f"toolbox: ignoring TOOLBOX_EXTRA_CA={extra}: {e}")
+    return ctx
 
 
 def _expiry(token):
@@ -120,7 +171,30 @@ def _refresh(refresh_token, quiet=False):
     return None
 
 
-def _device_flow():
+def pending_path():
+    return cache_path() + ".pending"
+
+
+# A pending code with less time than this left is not worth handing out again.
+PENDING_REUSE_MIN = 30
+
+
+def begin_device_flow(force=False):
+    """Ask Dex for a device code and persist it. Returns the pending record.
+
+    Split from the wait so a caller can print the URL and return immediately -
+    an agent driving this over docker exec needs the URL in hand within one
+    command, not after a sleep-and-hope.
+
+    Idempotent: if a code is already pending and still has time on it, hand back
+    the same one. Minting a fresh code on every call would orphan the URL the
+    human already has open - they approve it, and --wait polls a different code
+    forever.
+    """
+    if not force:
+        live = _read_pending()
+        if live and live.get("expires_at", 0) - time.time() > PENDING_REUSE_MIN:
+            return live
     status, body = _post(
         "/device/code",
         {
@@ -131,37 +205,92 @@ def _device_flow():
     if status != 200:
         sys.exit(f"toolbox: could not start device flow: {status} {body}")
 
-    log("")
-    log("  Open this URL in your browser and approve with GitHub:")
-    log(f"    {body['verification_uri_complete']}")
-    log("")
-    log(f"  code {body['user_code']} - expires in {body['expires_in'] // 60} minutes")
-    log("")
+    pending = {
+        "device_code": body["device_code"],
+        "user_code": body["user_code"],
+        "url": body["verification_uri_complete"],
+        "interval": body.get("interval", 5),
+        "expires_at": time.time() + body.get("expires_in", 300),
+        "force": force,
+    }
+    _write_private_json(pending_path(), pending)
+    return pending
 
-    interval = body.get("interval", 5)
-    deadline = time.time() + body.get("expires_in", 300)
-    while time.time() < deadline:
-        time.sleep(interval)
+
+def _read_pending():
+    try:
+        with open(pending_path()) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _clear_pending():
+    try:
+        os.remove(pending_path())
+    except OSError:
+        pass
+
+
+def wait_device_flow(pending, max_seconds=None):
+    """Poll Dex until the human approves.
+
+    Returns the token response, or None if max_seconds elapsed first with the
+    code still valid - the caller can simply call again. Terminal failures
+    (expired, denied) exit, and drop the pending record so the next --begin
+    mints a fresh code instead of re-polling a dead one.
+
+    Polls before sleeping: by the time --wait runs, --begin was at least one
+    agent turn ago and the human has often already approved, so a leading
+    sleep is a guaranteed five seconds of nothing.
+    """
+    interval = pending.get("interval", 5)
+    stop = None if max_seconds is None else time.time() + max_seconds
+    while time.time() < pending["expires_at"]:
         status, tok = _post(
             "/token",
             {
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": body["device_code"],
+                "device_code": pending["device_code"],
                 "client_id": client_id(),
             },
         )
         if status == 200 and tok.get("id_token"):
-            log("  Authenticated.")
+            _clear_pending()
             return tok
         err = tok.get("error")
-        if err == "authorization_pending":
-            continue
         if err == "slow_down":
             interval += 5
-            continue
-        sys.exit(f"toolbox: device flow failed: {tok}")
+        elif err != "authorization_pending":
+            _clear_pending()
+            sys.exit(f"toolbox: login {err or 'failed'}: {tok.get('error_description') or tok} - run toolbox-login --begin again")
+        if stop is not None and time.time() + interval >= stop:
+            return None
+        time.sleep(interval)
 
-    sys.exit("toolbox: timed out waiting for approval")
+    _clear_pending()
+    sys.exit("toolbox: the code expired before it was approved - run toolbox-login --begin again")
+
+
+def _device_flow():
+    pending = begin_device_flow()
+    log("")
+    log("  Open this URL in your browser and approve with GitHub:")
+    log(f"    {pending['url']}")
+    log("")
+    log(f"  code {pending['user_code']} - expires in 5 minutes")
+    log("")
+    tok = wait_device_flow(pending)
+    log("  Authenticated.")
+    return tok
+
+
+def save_token(tok, cache):
+    # Dex does not always return a new refresh token on refresh; keep the old one.
+    if not tok.get("refresh_token") and cache.get("refresh_token"):
+        tok["refresh_token"] = cache["refresh_token"]
+    _write_cache(tok)
+    return tok["id_token"]
 
 
 def get_token(force_login=False, interactive=True):
@@ -185,12 +314,7 @@ def get_token(force_login=False, interactive=True):
             return None
         tok = _device_flow()
 
-    # Dex does not always return a new refresh token on refresh; keep the old one.
-    if not tok.get("refresh_token") and cache.get("refresh_token"):
-        tok["refresh_token"] = cache["refresh_token"]
-
-    _write_cache(tok)
-    return tok["id_token"]
+    return save_token(tok, cache)
 
 
 # ---------------------------------------------------------------------------

@@ -22,4 +22,16 @@ if [ -t 0 ]; then
     toolbox-login || true
 fi
 
+# `docker run -d` with no command: stay up so the caller can `docker exec` into
+# us, instead of bash exiting immediately for want of a terminal. Agents rely on
+# this - it is what lets step 1 of AGENTS.md be a bare `docker run -d`.
+#
+# Only when stdin is neither a terminal nor a pipe: `-d` hands us /dev/null, but
+# `docker run -i ... < script` hands us a pipe and wants bash to read it. And
+# bounded rather than forever - this container holds a live credential, and an
+# abandoned session should not keep it reachable indefinitely.
+if [ ! -t 0 ] && [ ! -p /dev/stdin ] && [ "$*" = "bash" ]; then
+    exec sleep "${TOOLBOX_IDLE_SECONDS:-14400}"
+fi
+
 exec "$@"

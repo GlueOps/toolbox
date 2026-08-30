@@ -43,7 +43,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_ctx = ssl.create_default_context()
+_ctx = toolbox_auth.ssl_context()  # honours TOOLBOX_EXTRA_CA
 if os.environ.get("TOOLBOX_INSECURE_SKIP_VERIFY", "").lower() in ("1", "true", "yes"):
     _ctx.check_hostname = False
     _ctx.verify_mode = ssl.CERT_NONE
