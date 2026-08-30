@@ -83,12 +83,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._relay(r.status, r.headers, r.read())
         except urllib.error.HTTPError as e:
             if e.code in (301, 302, 303, 307, 308):
-                # A redirect here is the edge bouncing us to oauth2-proxy's login
-                # page, i.e. it did not accept the token.
-                self._json(401, {"errors": [
-                    "toolbox: the platform edge rejected this token - "
-                    "run 'toolbox-login --force' to re-authenticate"
-                ]})
+                # Distinguish "the edge bounced us to a login page" from any other
+                # redirect. Reporting every 3xx as an auth failure once sent us
+                # chasing the wrong bug: OpenBao's own 403 was being rewritten into
+                # a login redirect upstream, and this message hid that completely.
+                loc = e.headers.get("Location", "")
+                if "/oauth2/start" in loc or "/oauth2/sign_in" in loc:
+                    self._json(401, {"errors": [
+                        "toolbox: the platform edge rejected this token - "
+                        "run 'toolbox-login --force' to re-authenticate"
+                    ]})
+                else:
+                    self._json(502, {"errors": [
+                        f"toolbox: unexpected redirect from upstream "
+                        f"({e.code} -> {loc or 'no Location header'})"
+                    ]})
                 return
             # OpenBao returns meaningful bodies on 4xx; pass them straight through.
             self._relay(e.code, e.headers, e.read())

@@ -64,7 +64,12 @@ rather than daily.
 
 **ArgoCD** accepts that token directly (it's configured with the toolbox audience
 in `allowedAudiences`), so one token satisfies both the edge and ArgoCD itself.
-The `argocd` wrapper sets `ARGOCD_AUTH_TOKEN` fresh on each call.
+
+It has to be passed as `-H "Authorization: …"`, though — **not** `ARGOCD_AUTH_TOKEN`.
+The CLI sends that one in a `Token:` header, which oauth2-proxy doesn't read, so
+the edge sees no credential and bounces the request to a login page; the CLI then
+fails with the rather unhelpful `rpc error: unexpected EOF`. `-H` is a global flag,
+so the wrapper just prepends it and sets the token fresh on every call.
 
 **OpenBao** can't work that way. Its own credential travels in `X-Vault-Token`,
 and the edge needs an `Authorization` bearer as well. `bao` has a `-header` flag,
