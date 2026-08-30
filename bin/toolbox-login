@@ -5,7 +5,7 @@
     toolbox-login --begin    # print the URL and return immediately (idempotent)
     toolbox-login --wait     # wait for approval; exits 2 after ~90s if not yet, just rerun
     toolbox-login --force    # discard the cached identity first (combine with --begin)
-    toolbox-login --check    # exit 0 if Dex is reachable from here, 1 if not
+    toolbox-login --check    # egress probe: 0 ok, 1 unreachable, 2 TLS not trusted
 
 Uses the OIDC device flow, so there is no loopback listener and no redirect URI:
 you open a URL on whatever machine has your browser and approve with GitHub. The
@@ -105,7 +105,7 @@ def main():
         return 0
     force = "--force" in a
     if "--check" in a:
-        return 0 if toolbox_auth.probe() else 1
+        return toolbox_auth.probe()
     if "--begin" in a:
         return begin(force)
     if "--wait" in a:

@@ -59,9 +59,17 @@ The container handles all of it, so the CLIs are just the CLIs.
 the environment so you don't have to. `up` starts dockerd if it's installed but
 not running, pulls the image if missing, passes proxy settings through by name,
 mounts the host's own CA bundle so the container trusts whatever the host trusts
-(a TLS-intercepting proxy included), uses host networking when the proxy is bound
-to the host's loopback, and falls back to host networking if the bridge network
-can't reach Dex. It prints each decision.
+(a TLS-intercepting proxy included), and uses host networking when the proxy is
+bound to the host's loopback. It then checks egress from inside the container
+against a small public endpoint — not your cluster, which may be slow or private
+— and if the bridge network has none, recreates the container with host
+networking; a TLS failure there means an interception CA the host doesn't have,
+and it says so. It prints each decision.
+
+It also notices when it's being driven by an agent (Claude Code sets
+`CLAUDECODE`; otherwise, no terminal): then `up` prints the next step after the
+URL and `wait` returns after ~90s so it fits under a tool's command timeout. At a
+terminal, `up` opens the browser and `wait` blocks until you've approved.
 
 | | |
 |---|---|
@@ -72,7 +80,8 @@ can't reach Dex. It prints each decision.
 | `./toolbox status` | running? logged in? |
 | `./toolbox down` | remove the container; the login volume is kept |
 
-Overrides: `TOOLBOX_IMAGE`, `TOOLBOX_CONTAINER`, `TOOLBOX_VOLUME`, plus every
+Overrides: `TOOLBOX_IMAGE`, `TOOLBOX_CONTAINER`, `TOOLBOX_VOLUME`,
+`TOOLBOX_PROBE_URL` (default `https://www.google.com/generate_204`), plus every
 container variable below is passed through if set.
 
 ## Commands inside the container

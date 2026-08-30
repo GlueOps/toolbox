@@ -92,6 +92,7 @@ run_container() {  # $1 = bridge|host
     # often carry credentials.
     for v in TOOLBOX_BAO_ROLES TOOLBOX_BAO_AUTH_PATH TOOLBOX_CLIENT_ID TOOLBOX_DEX_URL \
              TOOLBOX_BAO_UPSTREAM TOOLBOX_WAIT_SECONDS TOOLBOX_IDLE_SECONDS \
+             TOOLBOX_PROBE_URL TOOLBOX_HTTP_RETRIES \
              HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; do
         if [ -n "${!v:-}" ]; then args+=(-e "$v"); fi
     done
@@ -100,10 +101,18 @@ run_container() {  # $1 = bridge|host
     args+=(-e "NO_PROXY=${NO_PROXY:-${no_proxy:-}}${NO_PROXY:+,}${no_proxy:+,}127.0.0.1,localhost")
     args+=(-e "no_proxy=${no_proxy:-${NO_PROXY:-}}${no_proxy:+,}${NO_PROXY:+,}127.0.0.1,localhost")
 
+    # Trust what the host trusts, plus anything the caller names explicitly.
+    local cas=""
     ca=$(host_ca_bundle)
     if [ -n "$ca" ]; then
-        args+=(-v "$ca:/toolbox-host-ca.crt:ro" -e TOOLBOX_EXTRA_CA=/toolbox-host-ca.crt)
+        args+=(-v "$ca:/toolbox-host-ca.crt:ro"); cas=/toolbox-host-ca.crt
     fi
+    if [ -n "${TOOLBOX_EXTRA_CA:-}" ]; then
+        [ -r "$TOOLBOX_EXTRA_CA" ] || die "TOOLBOX_EXTRA_CA=$TOOLBOX_EXTRA_CA is not readable"
+        args+=(-v "$TOOLBOX_EXTRA_CA:/toolbox-extra-ca.crt:ro"); cas="${cas:+$cas:}/toolbox-extra-ca.crt"
+        log "trusting extra CA: $TOOLBOX_EXTRA_CA"
+    fi
+    [ -n "$cas" ] && args+=(-e "TOOLBOX_EXTRA_CA=$cas")
 
     if [ "$net" = host ]; then
         port=$(free_port)
@@ -117,15 +126,47 @@ run_container() {  # $1 = bridge|host
     docker run "${args[@]}" "$IMAGE" >/dev/null
 }
 
-# Can the container reach Dex? Asked before --begin, which would happily hand
-# back a cached URL or token without ever touching the network. Bounded so a
-# blackholed network fails in seconds, not minutes.
-reachable() {
-    docker exec "$NAME" timeout 30 toolbox-login --check >/dev/null 2>&1
+# Agent mode: driven by an AI (Claude Code exports CLAUDECODE) or anything else
+# without a terminal. Changes only how we talk: print the next step after the
+# URL, and let `wait` return so it fits under a tool's command timeout. A human
+# at a terminal gets the browser opened and a `wait` that blocks.
+agent_mode() { [ -n "${CLAUDECODE:-}" ] || [ ! -t 0 ]; }
+
+# Fast egress check against a small public endpoint, not the cluster's Dex
+# (which may be slow or private). Exit: 0 ok, 1 unreachable, 2 TLS not trusted.
+# Asked before --begin, which hands back a cached URL or token without ever
+# touching the network and so cannot tell a working network from a broken one.
+probe() {
+    docker exec "$NAME" timeout 30 toolbox-login --check
 }
 
+# --begin with a short retry budget: from here a failure means "try the other
+# network", and we would rather learn that in 20s than 60s.
 begin() {
-    docker exec "$NAME" toolbox-login --begin
+    docker exec -e TOOLBOX_HTTP_RETRIES=2 "$NAME" toolbox-login --begin
+}
+
+open_browser() {
+    local url=$1
+    if command -v xdg-open >/dev/null 2>&1; then xdg-open "$url" >/dev/null 2>&1 &
+    elif command -v open >/dev/null 2>&1; then open "$url" >/dev/null 2>&1 &
+    fi
+}
+
+# Print the URL, then whatever the reader needs to do next.
+login() {
+    local out url
+    out=$(begin) || return 1
+    printf '%s\n' "$out"
+    url=$(printf '%s\n' "$out" | head -1)
+    case "$url" in
+        https://*)
+            if agent_mode; then
+                log "next: write that URL into your reply, then run: ./toolbox wait && ./toolbox <command>"
+            else
+                open_browser "$url"
+            fi ;;
+    esac
 }
 
 container_domain() {
@@ -141,7 +182,7 @@ cmd_up() {
     if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)" = true ]; then
         if [ "$(container_domain)" = "$DOMAIN" ]; then
             log "reusing the running container"
-            begin; return
+            login; return
         fi
         log "running container is for $(container_domain); replacing it"
     fi
@@ -152,26 +193,49 @@ cmd_up() {
         docker pull -q "$IMAGE" >/dev/null
     fi
 
-    local net=bridge
+    local net=bridge rc
     proxy_is_loopback && net=host
     run_container "$net"
 
-    if reachable; then begin; return; fi
+    # Egress first, cheaply. No egress from the bridge is the common sandbox
+    # failure (a loopback-bound proxy, or egress redirected on the host only).
+    set +e; probe; rc=$?; set -e
+    if [ "$rc" = 1 ] && [ "$net" = bridge ] && [ "$(uname -s)" = Linux ]; then
+        log "no egress from the bridge network; retrying with host networking"
+        docker rm -f "$NAME" >/dev/null 2>&1 || true
+        net=host; run_container host
+        set +e; probe; rc=$?; set -e
+    fi
+    case "$rc" in
+        0) ;;
+        2) die "a proxy intercepts TLS and the container does not trust its CA. The host's bundle ($(host_ca_bundle)) did not contain it; point TOOLBOX_EXTRA_CA at the proxy's CA file and run up again" ;;
+        *) die "the container has no network egress at all (tried ${net} networking). Check this host can reach the internet; if it needs a proxy, export HTTPS_PROXY and run up again" ;;
+    esac
 
+    # Then Dex. Egress can work while Dex is only reachable from the host - a
+    # VPN or tailscale on the host, say - so a failure here still gets the
+    # host-networking retry.
+    if login; then return 0; fi
     if [ "$net" = bridge ] && [ "$(uname -s)" = Linux ]; then
         log "could not reach Dex from the bridge network; retrying with host networking"
         docker rm -f "$NAME" >/dev/null 2>&1 || true
         run_container host
-        if reachable; then begin; return; fi
+        if login; then return 0; fi
     fi
-
-    log "could not reach https://dex.$DOMAIN from inside the container. Container log:"
-    docker logs "$NAME" >&2 2>&1 || true
-    die "check that the captain domain is right and that this host can reach it (curl https://dex.$DOMAIN/healthz)"
+    die "cannot reach https://dex.$DOMAIN from inside the container. Check the captain domain, and that this host can reach it: curl https://dex.$DOMAIN/healthz"
 }
 
 cmd_wait() {
-    docker exec "$NAME" toolbox-login --wait
+    if agent_mode; then
+        docker exec "$NAME" toolbox-login --wait
+        return
+    fi
+    # A human at a terminal expects this to block until approved.
+    local rc
+    while :; do
+        set +e; docker exec "$NAME" toolbox-login --wait; rc=$?; set -e
+        [ "$rc" = 2 ] || return "$rc"
+    done
 }
 
 cmd_exec() {

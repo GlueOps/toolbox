@@ -32,11 +32,14 @@ later command is `./toolbox <command>`.
 **`up` owns the environment.** It starts dockerd if it's installed but not
 running, pulls the image, passes proxy variables through, mounts the host's CA
 bundle so the container trusts what the host trusts, uses host networking when
-the proxy is on the host's loopback, and retries with host networking if the
-bridge can't reach Dex. It prints each decision on stderr. Don't check docker,
-read proxy documentation, look for CA files or test connectivity before running
-it — every one of those is a wasted command; `up` already does the right thing
-or tells you exactly what it couldn't do.
+the proxy is on the host's loopback, checks egress from inside the container and
+retries with host networking if the bridge has none, and retries again if Dex
+turns out to be reachable only from the host. It prints each decision on stderr,
+and it knows it's talking to you (it sees `CLAUDECODE`, or no terminal) so it
+tells you the next step right after the URL. Don't check docker, read proxy
+documentation, look for CA files or test connectivity before running it — every
+one of those is a wasted command; `up` already does the right thing or tells you
+exactly what it couldn't do.
 
 ## If `up` fails
 
@@ -46,10 +49,18 @@ Its last lines say what happened. The cases:
   you are not root — you need docker, or a user that can reach it. Nothing in
   this repo can fix that; tell the human.
 - **`dockerd did not come up`** — `cat /tmp/toolbox-dockerd.log`.
-- **`could not reach https://dex.<domain>`** after it tried both networks — the
-  domain is wrong, or this host has no route to it. Check
-  `curl https://dex.<domain>/healthz` from the host; if that fails too, the
-  environment can't reach the cluster and no container flag will change that.
+- **`no network egress at all`** after both networks — this host can't reach the
+  internet from a container. If the host needs a proxy, `export HTTPS_PROXY`
+  (and `HTTP_PROXY`) in your shell and run `up` again; it passes them through.
+- **`a proxy intercepts TLS and the container does not trust its CA`** — the
+  host's CA bundle didn't include the interception CA. Find the CA file your
+  environment installs (its own docs will say), then
+  `TOOLBOX_EXTRA_CA=/path/to/ca.crt ./toolbox up <domain>`. This is the one case
+  where reading your environment's proxy docs is worth it.
+- **`cannot reach https://dex.<domain>`** after both networks, with egress
+  working — the domain is wrong, or the cluster is on a network this host can't
+  see. Check `curl https://dex.<domain>/healthz` from the host; if that fails
+  too, no container flag will change it.
 - **`the code expired`** or **`login access_denied`** from `wait` — run
   `./toolbox up <domain>` again and show the new URL.
 - **Told to log in as someone else** — `./toolbox toolbox-login --begin --force`

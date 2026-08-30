@@ -22,10 +22,21 @@ fi
 # working. Written to a writable path because this runs unprivileged, so
 # update-ca-certificates is not available to us.
 : "${TOOLBOX_EXTRA_CA:=}"
-if [ -n "$TOOLBOX_EXTRA_CA" ] && [ -r "$TOOLBOX_EXTRA_CA" ]; then
+if [ -n "$TOOLBOX_EXTRA_CA" ]; then
     _toolbox_bundle="${TMPDIR:-/tmp}/toolbox-ca-bundle.pem"
-    if [ ! -s "$_toolbox_bundle" ] || [ "$TOOLBOX_EXTRA_CA" -nt "$_toolbox_bundle" ]; then
-        cat /etc/ssl/certs/ca-certificates.crt "$TOOLBOX_EXTRA_CA" > "$_toolbox_bundle" 2>/dev/null
+    if [ ! -s "$_toolbox_bundle" ]; then
+        # Colon-separated list. Entries that are missing or not regular files
+        # (a bind mount of a path that does not exist on the docker host arrives
+        # as an empty directory) are skipped, never fatal: this is sourced by
+        # the entrypoint under set -e, and a bad CA path must not kill the
+        # container without a word.
+        _toolbox_ifs=$IFS; IFS=:
+        for _toolbox_ca in $TOOLBOX_EXTRA_CA; do
+            if [ -f "$_toolbox_ca" ] && [ -r "$_toolbox_ca" ]; then
+                cat /etc/ssl/certs/ca-certificates.crt "$_toolbox_ca" >> "$_toolbox_bundle" 2>/dev/null || true
+            fi
+        done
+        IFS=$_toolbox_ifs; unset _toolbox_ifs _toolbox_ca
     fi
     if [ -s "$_toolbox_bundle" ]; then
         # Covers all three runtimes in this image: Go reads SSL_CERT_FILE

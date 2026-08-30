@@ -57,7 +57,7 @@ def log(msg):
 # resolver settles, and an agent driving this runs --begin the instant the
 # container is up. Failing on the first miss sent one straight into twenty
 # seconds of network debugging; retrying briefly makes that a non-event.
-TRANSIENT_RETRIES = 6
+TRANSIENT_RETRIES = int(os.environ.get("TOOLBOX_HTTP_RETRIES") or 6)
 TRANSIENT_BACKOFF = 1.0
 _SSL = None  # built lazily: ssl_context() logs, and log() is defined below
 
@@ -90,22 +90,43 @@ def _post(path, data):
     sys.exit(f"toolbox: cannot reach Dex at {dex_url()} after {TRANSIENT_RETRIES} attempts: {last}")
 
 
+PROBE_OK, PROBE_TLS, PROBE_UNREACHABLE = 0, 2, 1
+
+
 def probe():
-    """Can this container reach Dex at all? A GET of the discovery document with
-    the same trust store and retry budget as everything else. Separate from
-    --begin on purpose: --begin returns a cached URL or token without touching
-    the network, so it cannot tell a working network from a broken one."""
-    url = dex_url() + "/.well-known/openid-configuration"
+    """Classify this container's egress, fast, against a small public endpoint
+    rather than the cluster's own Dex (which may be slow, or private):
+
+      0  reachable
+      2  TLS failed - a proxy intercepts TLS and its CA is not trusted here
+      1  unreachable - no route, no DNS, or a loopback-bound proxy the bridge
+         network cannot see
+
+    Separate from --begin on purpose: --begin returns a cached URL or token
+    without touching the network, so it cannot tell a working network from a
+    broken one."""
+    url = os.environ.get("TOOLBOX_PROBE_URL") or "https://www.google.com/generate_204"
     last = None
     for _ in range(3):
         try:
-            with urllib.request.urlopen(url, timeout=8, context=_ssl()) as r:
-                return r.status == 200
+            with urllib.request.urlopen(url, timeout=5, context=_ssl()) as r:
+                if r.status < 400:
+                    return PROBE_OK
+                last = f"HTTP {r.status}"
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code}"
+        except ssl.SSLCertVerificationError as e:
+            log(f"toolbox: TLS to {url} failed: {e.reason if hasattr(e, 'reason') else e}")
+            return PROBE_TLS
         except (urllib.error.URLError, OSError) as e:
-            last = getattr(e, "reason", e)
-            time.sleep(1)
+            reason = getattr(e, "reason", e)
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                log(f"toolbox: TLS to {url} failed: {reason}")
+                return PROBE_TLS
+            last = reason
+        time.sleep(1)
     log(f"toolbox: cannot reach {url}: {last}")
-    return False
+    return PROBE_UNREACHABLE
 
 
 def _read_cache():
@@ -147,12 +168,15 @@ def ssl_context():
     directly rather than relying on SSL_CERT_FILE from /etc/toolbox-env.sh, which
     only login shells source - `docker exec toolbox toolbox-login` is not one."""
     ctx = ssl.create_default_context()
-    extra = os.environ.get("TOOLBOX_EXTRA_CA")
-    if extra and os.path.isfile(extra):
+    # Colon-separated, so the driver can hand over the host's bundle and a
+    # user-supplied CA together.
+    for extra in (os.environ.get("TOOLBOX_EXTRA_CA") or "").split(":"):
+        if not extra or not os.path.isfile(extra):
+            continue
         try:
             ctx.load_verify_locations(cafile=extra)
         except (ssl.SSLError, OSError) as e:
-            log(f"toolbox: ignoring TOOLBOX_EXTRA_CA={extra}: {e}")
+            log(f"toolbox: ignoring TOOLBOX_EXTRA_CA entry {extra}: {e}")
     return ctx
 
 
