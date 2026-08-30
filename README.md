@@ -114,6 +114,13 @@ forwards, so it must never be exposed.
 Built for `linux/amd64` and `linux/arm64`, so Apple Silicon is native — no
 emulation, no Rosetta.
 
+## Releases
+
+Tagged with [release-please](https://github.com/googleapis/release-please) from
+conventional commits on `main`. A release tag publishes
+`ghcr.io/glueops/toolbox:<version>`, `:<major>.<minor>` and `:latest`, all
+multi-arch. Pin a version in anything automated; `:latest` is fine for people.
+
 ## Building
 
 ```bash
