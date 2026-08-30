@@ -30,10 +30,11 @@ if [ -n "$TOOLBOX_EXTRA_CA" ]; then
         # as an empty directory) are skipped, never fatal: this is sourced by
         # the entrypoint under set -e, and a bad CA path must not kill the
         # container without a word.
+        cat /etc/ssl/certs/ca-certificates.crt > "$_toolbox_bundle" 2>/dev/null || true
         _toolbox_ifs=$IFS; IFS=:
         for _toolbox_ca in $TOOLBOX_EXTRA_CA; do
             if [ -f "$_toolbox_ca" ] && [ -r "$_toolbox_ca" ]; then
-                cat /etc/ssl/certs/ca-certificates.crt "$_toolbox_ca" >> "$_toolbox_bundle" 2>/dev/null || true
+                cat "$_toolbox_ca" >> "$_toolbox_bundle" 2>/dev/null || true
             fi
         done
         IFS=$_toolbox_ifs; unset _toolbox_ifs _toolbox_ca
