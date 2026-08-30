@@ -100,6 +100,81 @@ docker exec toolbox bash -lc 'bao kv list secret/'
 
 `docker exec toolbox argocd app list` — without `bash -lc` — will not work.
 
+## Commands
+
+Everything runs through `docker exec toolbox bash -lc '...'`. Only the part inside
+the quotes changes, so the rest of this section shows just that.
+
+Quoting: the wrapper uses single quotes, so use **double** quotes inside. If you
+need a pipeline or a script, keep it in one `bash -lc` rather than piping out to
+the host, so the container's environment applies throughout.
+
+```bash
+docker exec toolbox bash -lc 'argocd app list'
+docker exec toolbox bash -lc 'bao kv get -format=json secret/my-app'
+```
+
+### Argo CD — reading
+
+| | |
+|---|---|
+| `argocd app list` | every application, with sync and health |
+| `argocd app list -o json` | same, machine-readable — use this to filter or sort |
+| `argocd app get <app>` | one application in detail, including its resources |
+| `argocd app history <app>` | deployment history, newest first |
+| `argocd app diff <app>` | live state vs. desired — exits `1` if there is a diff, `0` if none, `2` on error |
+| `argocd app manifests <app>` | rendered manifests |
+| `argocd app logs <app>` | logs from the app's pods |
+| `argocd cluster list` | connected clusters |
+| `argocd proj list` | projects |
+| `argocd repo list` | configured repositories |
+
+### Argo CD — changing (only when asked)
+
+| | |
+|---|---|
+| `argocd app sync <app>` | deploy desired state to the cluster |
+| `argocd app rollback <app> <id>` | roll back to a history entry |
+| `argocd app delete <app>` | remove the application |
+
+### OpenBao — reading
+
+| | |
+|---|---|
+| `bao kv list secret/` | keys at a path — trailing slash matters |
+| `bao kv get secret/<path>` | one secret |
+| `bao kv get -format=json secret/<path>` | machine-readable |
+| `bao kv get -field=<key> secret/<path>` | one value, unquoted, no trailing newline |
+| `bao kv metadata get secret/<path>` | versions and timestamps, no values |
+| `bao token lookup` | who you are, which policies you hold |
+| `bao token capabilities secret/<path>` | what you may do at a path — check before assuming |
+| `bao secrets list` | mounted secrets engines |
+| `bao policy read <name>` | a policy's rules |
+
+### OpenBao — changing (only when asked)
+
+| | |
+|---|---|
+| `bao kv put secret/<path> k=v` | write, creating a new version |
+| `bao kv patch secret/<path> k=v` | update one key, leaving others |
+| `bao kv delete secret/<path>` | soft-delete the latest version |
+| `bao kv destroy -versions=<n> secret/<path>` | permanently remove a version |
+
+`bao kv put` replaces the whole secret — keys you don't pass are dropped from the
+new version. Use `patch` to change one field, or read the secret first.
+
+### Checking before you act
+
+```bash
+docker exec toolbox bash -lc 'bao token capabilities secret/my-app'
+docker exec toolbox bash -lc 'argocd app diff my-app'
+```
+
+`token capabilities` tells you what you may actually do at a path, which beats
+discovering it from a 403. `app diff` shows what a sync would change. Mind its exit
+codes: `1` means a diff was found and `2` means the command failed — so treat
+non-zero as "check which", not as "there is drift".
+
 **Rules.**
 
 - **Never print the token.** `toolbox-token` emits a live credential, and you don't
