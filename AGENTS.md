@@ -1,12 +1,55 @@
 # Instructions for AI agents
 
-This repository builds a container that gives you working `argocd` and `bao`
-against a GlueOps cluster. See [README.md](README.md) for what it is and how a
-human uses it.
+This container gives you working `argocd` and `bao` against a GlueOps cluster.
 
-This file is only about getting authenticated, which is the part you cannot work
-out from the code. Follow it end to end before running anything — the whole
-sequence is here, so nobody should have to explain it to you in a prompt.
+## Start here
+
+Run these three commands now, in order. Everything below is reference — read it
+only if something fails.
+
+```bash
+# 1. start the container (ask the human for the captain domain if you weren't given one)
+docker run -d --name toolbox \
+  -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
+  -v glueops-toolbox:/home/toolbox/.config/glueops \
+  ghcr.io/glueops/toolbox:latest sleep 3600
+
+# 2. start the login and read the URL out
+docker exec -d toolbox sh -c 'toolbox-login > /tmp/login.log 2>&1'
+sleep 4
+docker exec toolbox cat /tmp/login.log
+```
+
+**Put that URL and code in your reply immediately.** The human approves in a
+browser; they cannot approve what they have not seen. Then wait for it:
+
+```bash
+# 3. poll until authenticated, then run whatever you were asked
+for _ in $(seq 1 60); do
+  docker exec toolbox grep -q 'Authenticated\.' /tmp/login.log && break
+  sleep 5
+done
+docker exec toolbox bash -lc 'argocd app list'
+```
+
+## Do not
+
+- **Don't clone this repository.** You don't need it. The image on the registry is
+  the whole product; this file is the whole interface.
+- **Don't read the source to work out how it functions.** The proxy, the wrappers
+  and the login helper are implementation detail. Nothing in them changes what you
+  type, and reading them is minutes of work for no answer.
+- **Don't probe the environment first** — network egress, Python libraries,
+  container internals. If step 1 runs, you're fine; if it doesn't, the error tells
+  you what's wrong.
+- **Don't use `docker run -it`.** You have no TTY. That is what step 1 avoids.
+
+Get the login URL in front of the human as fast as you can — the code expires five
+minutes after it is issued, and every command you run first eats into that.
+
+---
+
+Everything below is reference.
 
 ## The two tools
 
@@ -36,69 +79,26 @@ The one thing you can't do is authenticate. Login is a device flow: a human open
 a URL and approves with GitHub. Start it, **give the URL to the person you're
 working for**, wait for them, then run whatever you were asked.
 
-**You need the cluster's captain domain**, e.g. `prod.foobar.onglueops.com`.
-It is not in this repo and you cannot guess it. If it wasn't given to you, ask for
-it before starting — everything below depends on it.
+If a step in **Start here** fails, this is what each one is doing and why.
 
-**Run detached, not `docker run -it`.** You have no TTY, so an interactive
-container gives you nothing to type into and no way to read the URL back out:
+**The captain domain** (e.g. `prod.foobar.onglueops.com`) is not in this repo and
+cannot be guessed. Ask for it.
 
-```bash
-docker run -d --name toolbox \
-  -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
-  -v glueops-toolbox:/home/toolbox/.config/glueops \
-  ghcr.io/glueops/toolbox:latest sleep 3600
-```
+**`docker run -it` cannot work** — you have no TTY, so there is nothing to type
+into and no way to read the device URL back out. Detached plus `docker exec` is
+the whole reason for the shape of step 1.
 
-Without a TTY the entrypoint skips its automatic login, which is what you want —
-you drive it in the next step.
+**`docker exec -d`, not `... &`** — a backgrounded `docker exec` dies with the
+shell that started it, and each command you run is usually a fresh shell, so the
+login would be killed before anyone could approve it.
 
-**Start the login, show the URL, then wait it out.** `toolbox-login` polls Dex on
-its own until the human approves, so you don't need to hand the task back and
-wait to be told — surface the URL, then block on the same process and carry on the
-moment it succeeds.
+**`bash -lc` is required** for every command. `docker exec` bypasses the
+ENTRYPOINT, and the CLIs are configured in `/etc/toolbox-env.sh`, which login
+shells source. `docker exec toolbox argocd app list` will not work.
 
-```bash
-docker exec -d toolbox sh -c 'toolbox-login > /tmp/login.log 2>&1'
-sleep 4
-docker exec toolbox cat /tmp/login.log   # the URL and code
-```
-
-Use `docker exec -d`, not `... &`. Detaching inside the container means the login
-survives your shell exiting — a backgrounded `docker exec` dies with the shell that
-started it, and each command you run is usually a fresh shell.
-
-**Print the URL in your reply, not only in tool output**, before you start waiting.
-They cannot approve a code they have not seen, and if it is buried in a command
-trace they will not see it.
-
-Then poll until it completes — the code is good for five minutes:
-
-```bash
-for _ in $(seq 1 60); do
-  docker exec toolbox grep -q 'Authenticated\.' /tmp/login.log && break
-  sleep 5
-done
-docker exec toolbox cat /tmp/login.log
-```
-
-`Authenticated.` means you're through, and a second line reports whether the
-OpenBao login also succeeded. Now run whatever you were asked — no second prompt
-needed.
-
-`Already authenticated.` with no URL means the cached volume still holds a valid
-token — skip straight to the command. Codes expire after five minutes; if one
-lapses, run `toolbox-login` again and show the new URL.
-
-**Use a login shell for commands.** `docker exec` bypasses the ENTRYPOINT, and the
-CLIs are configured in `/etc/toolbox-env.sh`, which login shells source:
-
-```bash
-docker exec toolbox bash -lc 'argocd app list'
-docker exec toolbox bash -lc 'bao kv list secret/'
-```
-
-`docker exec toolbox argocd app list` — without `bash -lc` — will not work.
+**`Already authenticated.`** with no URL means the cached volume still holds a
+valid token. Skip to the command. Codes expire after five minutes; if one lapses,
+rerun `toolbox-login` and show the new URL.
 
 ## Commands
 
