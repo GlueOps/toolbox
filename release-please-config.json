@@ -20,7 +20,8 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "package-name": "toolbox"
+      "package-name": "toolbox",
+      "initial-version": "0.0.1"
     }
   }
 }
