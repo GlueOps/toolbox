@@ -14,6 +14,15 @@
 > `docker exec toolbox toolbox-login --wait && docker exec toolbox bash -lc 'argocd app list'`
 > — if `--wait` says `still waiting` (exit 2), run it again. Every later command
 > is `docker exec toolbox bash -lc '...'`.
+>
+> Two environment fixes, so you don't have to investigate: if docker isn't
+> running, `docker info >/dev/null 2>&1 || (nohup dockerd >/tmp/dockerd.log 2>&1 & sleep 4)`.
+> If your sandbox routes egress through a proxy on the host's loopback, start
+> `dockerd` with `HTTPS_PROXY="$HTTPS_PROXY"` and add
+> `--network host -e HTTPS_PROXY -e HTTP_PROXY -e NO_PROXY=127.0.0.1,localhost`
+> (plus `-v /path/to/proxy-ca.crt:/ca.crt:ro -e TOOLBOX_EXTRA_CA=/ca.crt` if that
+> proxy intercepts TLS)
+> to the `docker run` above. Anything else: [AGENTS.md](AGENTS.md).
 
 The platform CLIs in one container, already wired up to authenticate. Developers
 don't install `argocd`, `bao`, or anything else locally — and they don't need
@@ -127,7 +136,9 @@ UI's `auth/oidc`, which is why they can share the names of the policies they
 grant.
 
 The proxy binds to `127.0.0.1` only — it attaches your credential to whatever it
-forwards, so it must never be exposed.
+forwards, so it must never be exposed. (With `--network host`, needed to reach a
+proxy on the host's loopback, "127.0.0.1" is the host's: fine in a single-user
+sandbox, not on a shared machine.)
 
 ## Platforms
 

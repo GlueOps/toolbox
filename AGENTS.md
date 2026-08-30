@@ -40,17 +40,33 @@ see the command reference below.
 - **`container … is not running`** — the entrypoint exited. `docker logs toolbox`
   says why; almost always `TOOLBOX_CAPTAIN_DOMAIN` is missing or empty.
 - **`Cannot connect to the Docker daemon`** — if `dockerd` is installed and you
-  are root, start it and move on: `nohup dockerd >/tmp/dockerd.log 2>&1 &` then
-  retry once `docker info` succeeds. Don't survey other container runtimes.
-- **The image pull fails behind a proxy** — dockerd needs the proxy too:
-  `HTTPS_PROXY="$HTTPS_PROXY" nohup dockerd …`. Pass it into the container **by
-  name, never by value** — proxy URLs often carry credentials, and a value lands
-  in `ps`, the container config and your transcript:
-  `-e HTTPS_PROXY -e HTTP_PROXY -e NO_PROXY=127.0.0.1,localhost`. If the proxy
-  listens on the host's loopback, add `--add-host=host.docker.internal:host-gateway`
-  and point the variable at `http://host.docker.internal:<port>`. Do **not** use
-  `--network host`: the container runs a proxy that attaches your credential to
-  whatever it forwards, and host networking publishes it to every local process.
+  are root, start it and move on; don't survey other container runtimes:
+
+  ```bash
+  docker info >/dev/null 2>&1 || (nohup dockerd >/tmp/dockerd.log 2>&1 & sleep 4)
+  ```
+
+- **The image pull fails, or `--begin` can't reach Dex, behind a proxy** — a
+  sandbox that routes egress through a proxy on the host's loopback (common)
+  needs two things. `dockerd` needs the proxy for the pull:
+  `HTTPS_PROXY="$HTTPS_PROXY" nohup dockerd >/tmp/dockerd.log 2>&1 &`. And the
+  container must share the host's network to reach a loopback-bound proxy at
+  all — the bridge network cannot, and `host.docker.internal` only reaches
+  services bound to a non-loopback address. So add to step 1:
+
+  ```bash
+    --network host -e HTTPS_PROXY -e HTTP_PROXY -e NO_PROXY=127.0.0.1,localhost \
+  ```
+
+  Pass the variables **by name, never by value**: proxy URLs often carry
+  credentials, and a value lands in `ps`, the container config and your
+  transcript. Don't build port forwarders or socat bridges to avoid
+  `--network host`; it is the supported path. (It does put the container's
+  credential-attaching proxy on the host's loopback, where other local
+  processes could use it. In a single-user sandbox that is nobody; on a shared
+  machine, prefer `--add-host=host.docker.internal:host-gateway` with a proxy
+  bound to the bridge address instead.) If port 8200 is taken on the host, add
+  `-e TOOLBOX_PROXY_PORT=<free port>`.
 - **TLS errors** (`certificate verify failed`) — your environment terminates TLS
   at an egress proxy and the container doesn't trust its CA. Don't disable
   verification; mount the CA and add to step 1:
