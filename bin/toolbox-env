@@ -12,3 +12,27 @@ if [ -n "$TOOLBOX_CAPTAIN_DOMAIN" ]; then
     export BAO_ADDR="${BAO_ADDR:-http://127.0.0.1:${TOOLBOX_PROXY_PORT:-8200}}"
     export VAULT_ADDR="$BAO_ADDR"
 fi
+
+# Corporate and sandboxed networks often terminate TLS at an egress proxy, which
+# means every outbound request is signed by a CA the image has never heard of and
+# nothing works until that CA is trusted. Mount it and point TOOLBOX_EXTRA_CA at
+# it; the alternative is disabling verification, which is not an alternative.
+#
+# Appended to the system bundle rather than replacing it, or public CAs would stop
+# working. Written to a writable path because this runs unprivileged, so
+# update-ca-certificates is not available to us.
+: "${TOOLBOX_EXTRA_CA:=}"
+if [ -n "$TOOLBOX_EXTRA_CA" ] && [ -r "$TOOLBOX_EXTRA_CA" ]; then
+    _toolbox_bundle="${TMPDIR:-/tmp}/toolbox-ca-bundle.pem"
+    if [ ! -s "$_toolbox_bundle" ] || [ "$TOOLBOX_EXTRA_CA" -nt "$_toolbox_bundle" ]; then
+        cat /etc/ssl/certs/ca-certificates.crt "$TOOLBOX_EXTRA_CA" > "$_toolbox_bundle" 2>/dev/null
+    fi
+    if [ -s "$_toolbox_bundle" ]; then
+        # Covers all three runtimes in this image: Go reads SSL_CERT_FILE
+        # (argocd, bao), Python's ssl reads it too, and curl needs its own.
+        export SSL_CERT_FILE="$_toolbox_bundle"
+        export CURL_CA_BUNDLE="$_toolbox_bundle"
+        export REQUESTS_CA_BUNDLE="$_toolbox_bundle"
+    fi
+    unset _toolbox_bundle
+fi

@@ -32,6 +32,20 @@ done
 docker exec toolbox bash -lc 'argocd app list'
 ```
 
+**If TLS fails**, your environment terminates TLS at an egress proxy and the
+container doesn't trust its CA. Don't disable verification — mount the CA and
+point `TOOLBOX_EXTRA_CA` at it, adding these two flags to step 1:
+
+```bash
+  -v /etc/ssl/certs/proxy-ca.crt:/ca.crt:ro \
+  -e TOOLBOX_EXTRA_CA=/ca.crt \
+```
+
+It is appended to the system trust store, so public CAs keep working. The CA is
+usually already on your host — common paths are
+`/usr/local/share/ca-certificates/`, `/etc/ssl/certs/`, or whatever your
+environment's own docs name.
+
 ## Do not
 
 - **Don't clone this repository.** You don't need it. The image on the registry is

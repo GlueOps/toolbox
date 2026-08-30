@@ -59,6 +59,7 @@ The container handles all of it, so the CLIs are just the CLIs.
 | `ARGOCD_SERVER` | `argocd.$DOMAIN` | |
 | `TOOLBOX_PROXY_PORT` | `8200` | Loopback port the OpenBao proxy listens on |
 | `TOOLBOX_TOKEN_CACHE` | `~/.config/glueops/toolbox-token.json` | |
+| `TOOLBOX_EXTRA_CA` | — | Path to a mounted CA certificate to trust, for networks that terminate TLS at an egress proxy. Appended to the system store, so public CAs keep working. |
 | `TOOLBOX_BAO_ROLES` | `editor,reader` | OpenBao roles tried at login, in order |
 | `TOOLBOX_BAO_AUTH_PATH` | `jwt` | OpenBao auth mount the CLI logs in through |
 
