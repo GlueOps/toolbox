@@ -120,7 +120,17 @@ def _refresh(refresh_token, quiet=False):
     return None
 
 
-def _device_flow():
+def pending_path():
+    return cache_path() + ".pending"
+
+
+def begin_device_flow():
+    """Ask Dex for a device code and persist it. Returns the pending record.
+
+    Split from the wait so a caller can print the URL and return immediately -
+    an agent driving this over docker exec needs the URL in hand within one
+    command, not after a sleep-and-hope.
+    """
     status, body = _post(
         "/device/code",
         {
@@ -131,27 +141,47 @@ def _device_flow():
     if status != 200:
         sys.exit(f"toolbox: could not start device flow: {status} {body}")
 
-    log("")
-    log("  Open this URL in your browser and approve with GitHub:")
-    log(f"    {body['verification_uri_complete']}")
-    log("")
-    log(f"  code {body['user_code']} - expires in {body['expires_in'] // 60} minutes")
-    log("")
+    pending = {
+        "device_code": body["device_code"],
+        "user_code": body["user_code"],
+        "url": body["verification_uri_complete"],
+        "interval": body.get("interval", 5),
+        "expires_at": time.time() + body.get("expires_in", 300),
+    }
+    p = pending_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w") as f:
+        json.dump(pending, f)
+    os.chmod(p, stat.S_IRUSR | stat.S_IWUSR)
+    return pending
 
-    interval = body.get("interval", 5)
-    deadline = time.time() + body.get("expires_in", 300)
-    while time.time() < deadline:
+
+def _read_pending():
+    try:
+        with open(pending_path()) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def wait_device_flow(pending):
+    """Poll Dex until the human approves. Returns the token response."""
+    interval = pending.get("interval", 5)
+    while time.time() < pending["expires_at"]:
         time.sleep(interval)
         status, tok = _post(
             "/token",
             {
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": body["device_code"],
+                "device_code": pending["device_code"],
                 "client_id": client_id(),
             },
         )
         if status == 200 and tok.get("id_token"):
-            log("  Authenticated.")
+            try:
+                os.remove(pending_path())
+            except OSError:
+                pass
             return tok
         err = tok.get("error")
         if err == "authorization_pending":
@@ -161,7 +191,28 @@ def _device_flow():
             continue
         sys.exit(f"toolbox: device flow failed: {tok}")
 
-    sys.exit("toolbox: timed out waiting for approval")
+    sys.exit("toolbox: the code expired before it was approved - run toolbox-login --begin again")
+
+
+def _device_flow():
+    pending = begin_device_flow()
+    log("")
+    log("  Open this URL in your browser and approve with GitHub:")
+    log(f"    {pending['url']}")
+    log("")
+    log(f"  code {pending['user_code']} - expires in 5 minutes")
+    log("")
+    tok = wait_device_flow(pending)
+    log("  Authenticated.")
+    return tok
+
+
+def save_token(tok, cache):
+    # Dex does not always return a new refresh token on refresh; keep the old one.
+    if not tok.get("refresh_token") and cache.get("refresh_token"):
+        tok["refresh_token"] = cache["refresh_token"]
+    _write_cache(tok)
+    return tok["id_token"]
 
 
 def get_token(force_login=False, interactive=True):
@@ -185,12 +236,7 @@ def get_token(force_login=False, interactive=True):
             return None
         tok = _device_flow()
 
-    # Dex does not always return a new refresh token on refresh; keep the old one.
-    if not tok.get("refresh_token") and cache.get("refresh_token"):
-        tok["refresh_token"] = cache["refresh_token"]
-
-    _write_cache(tok)
-    return tok["id_token"]
+    return save_token(tok, cache)
 
 
 # ---------------------------------------------------------------------------

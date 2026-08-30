@@ -1,9 +1,17 @@
 # GlueOps Toolbox
 
-> **AI agents:** read [AGENTS.md](AGENTS.md) and run its "Start here" block. Don't
-> clone this repo, don't read the source, and don't use the quickstart below — it
-> needs a terminal you don't have. Fetch that one file and go:
-> `https://raw.githubusercontent.com/GlueOps/toolbox/main/AGENTS.md`
+> **AI agents:** you have no TTY, so skip the quickstart below. This is your
+> whole happy path — full instructions in [AGENTS.md](AGENTS.md):
+>
+> ```bash
+> docker run -d --name toolbox -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
+>   -v glueops-toolbox:/home/toolbox/.config/glueops ghcr.io/glueops/toolbox:latest \
+> && docker exec toolbox toolbox-login --begin
+> ```
+>
+> Put the URL it prints in your reply, then
+> `docker exec toolbox toolbox-login --wait && docker exec toolbox bash -lc 'argocd app list'`.
+> Every later command is `docker exec toolbox bash -lc '...'`.
 
 The platform CLIs in one container, already wired up to authenticate. Developers
 don't install `argocd`, `bao`, or anything else locally — and they don't need
@@ -44,6 +52,7 @@ The container handles all of it, so the CLIs are just the CLIs.
 | `argocd …` | ArgoCD CLI. Authenticated per-invocation, so a long shell never goes stale. |
 | `bao …` | OpenBao CLI, pointed at a local proxy that attaches your token. |
 | `toolbox-login` | Authenticate. Runs automatically on an interactive start. |
+| `toolbox-login --begin` / `--wait` | The same login in two halves: print the URL and return, then block until approved. For callers that can't sit on a blocking command. |
 | `toolbox-login --force` | Re-authenticate, e.g. to switch accounts. |
 | `toolbox-token` | Print the raw token, for scripting. |
 

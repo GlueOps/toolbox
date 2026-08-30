@@ -4,52 +4,59 @@ This container gives you working `argocd` and `bao` against a GlueOps cluster.
 
 ## Start here
 
-Run these three commands now, in order. Everything below is reference — read it
-only if something fails.
+Two commands. Everything below them is reference — read it only if one fails.
 
 ```bash
-# 1. start the container (ask the human for the captain domain if you weren't given one)
+# 1. start the container and get the login URL
+#    (ask the human for the captain domain if you weren't given one)
 docker run -d --name toolbox \
   -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
   -v glueops-toolbox:/home/toolbox/.config/glueops \
-  ghcr.io/glueops/toolbox:latest sleep 3600
-
-# 2. start the login and read the URL out
-docker exec -d toolbox sh -c 'toolbox-login > /tmp/login.log 2>&1'
-sleep 4
-docker exec toolbox cat /tmp/login.log
+  ghcr.io/glueops/toolbox:latest \
+&& docker exec toolbox toolbox-login --begin
 ```
 
-**Put that URL and code in your reply immediately.** The human approves in a
-browser; they cannot approve what they have not seen. Then wait for it:
+That prints a URL. **Put it in your reply now** — the human approves it in a
+browser, they cannot approve what they have not seen, and the code expires five
+minutes after it is issued. If it prints `Already authenticated.` instead, there
+is nothing to approve.
 
 ```bash
-# 3. poll until authenticated, then run whatever you were asked
-for _ in $(seq 1 60); do
-  docker exec toolbox grep -q 'Authenticated\.' /tmp/login.log && break
-  sleep 5
-done
-docker exec toolbox bash -lc 'argocd app list'
+# 2. wait for the approval, then run whatever you were asked
+docker exec toolbox toolbox-login --wait \
+&& docker exec toolbox bash -lc 'argocd app list'
 ```
 
-**If TLS fails**, your environment terminates TLS at an egress proxy and the
-container doesn't trust its CA. Don't disable verification — mount the CA and
-point `TOOLBOX_EXTRA_CA` at it, adding these two flags to step 1:
+`--wait` blocks until the human approves (up to five minutes) and then logs you
+into OpenBao as well. Every later command is `docker exec toolbox bash -lc '...'`
+— the `bash -lc` is required, see the command reference below.
 
-```bash
-  -v /etc/ssl/certs/proxy-ca.crt:/ca.crt:ro \
-  -e TOOLBOX_EXTRA_CA=/ca.crt \
-```
+## If step 1 fails
 
-It is appended to the system trust store, so public CAs keep working. The CA is
-usually already on your host — common paths are
-`/usr/local/share/ca-certificates/`, `/etc/ssl/certs/`, or whatever your
-environment's own docs name.
+- **`Cannot connect to the Docker daemon`** — if `dockerd` is installed and you
+  are root, start it and move on: `nohup dockerd >/tmp/dockerd.log 2>&1 &` then
+  retry once `docker info` succeeds. Don't survey other container runtimes.
+- **The image pull fails behind a proxy** — dockerd needs the proxy too:
+  `HTTPS_PROXY=<proxy> nohup dockerd ...`. Pass it into the container as well
+  with `-e HTTPS_PROXY=<proxy> -e NO_PROXY=127.0.0.1,localhost`, and if the proxy
+  listens on the host's loopback add `--network host` so the container can reach
+  it.
+- **TLS errors inside the container** — your environment terminates TLS at an
+  egress proxy and the container doesn't trust its CA. Don't disable
+  verification; mount the CA and add to step 1:
+
+  ```bash
+    -v /path/to/proxy-ca.crt:/ca.crt:ro -e TOOLBOX_EXTRA_CA=/ca.crt \
+  ```
+
+  It is appended to the system trust store, so public CAs keep working. The CA
+  is usually already on the host — `/usr/local/share/ca-certificates/`,
+  `/etc/ssl/certs/`, or wherever your environment's own docs say.
+- **`the code expired`** from `--wait` — run `toolbox-login --begin` again and
+  show the new URL.
 
 ## Do not
 
-- **Don't clone this repository.** You don't need it. The image on the registry is
-  the whole product; this file is the whole interface.
 - **Don't read the source to work out how it functions.** The proxy, the wrappers
   and the login helper are implementation detail. Nothing in them changes what you
   type, and reading them is minutes of work for no answer.
@@ -59,7 +66,8 @@ environment's own docs name.
 - **Don't use `docker run -it`.** You have no TTY. That is what step 1 avoids.
 
 Get the login URL in front of the human as fast as you can — the code expires five
-minutes after it is issued, and every command you run first eats into that.
+minutes after it is issued, and every command you run first eats into that. Step 1
+is one command for exactly that reason.
 
 ---
 
@@ -102,9 +110,10 @@ cannot be guessed. Ask for it.
 into and no way to read the device URL back out. Detached plus `docker exec` is
 the whole reason for the shape of step 1.
 
-**`docker exec -d`, not `... &`** — a backgrounded `docker exec` dies with the
-shell that started it, and each command you run is usually a fresh shell, so the
-login would be killed before anyone could approve it.
+**`--begin` and `--wait` are two halves of one login.** `--begin` asks Dex for a
+device code, saves it, prints the URL and returns; `--wait` polls Dex with that
+code until the human approves. Both are safe to rerun — if you're already logged
+in they say so and exit 0 — so there's no state for you to track.
 
 **`bash -lc` is required** for every command. `docker exec` bypasses the
 ENTRYPOINT, and the CLIs are configured in `/etc/toolbox-env.sh`, which login

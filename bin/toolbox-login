@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Authenticate the toolbox to the GlueOps platform.
 
-    toolbox-login            # only prompts if there is no usable token
+    toolbox-login            # interactive: prints the URL, waits for approval
+    toolbox-login --begin    # print the URL and return immediately
+    toolbox-login --wait     # block until the human has approved
     toolbox-login --force    # always re-authenticate (e.g. switch account)
 
 Uses the OIDC device flow, so there is no loopback listener and no redirect URI:
 you open a URL on whatever machine has your browser and approve with GitHub. The
 token is cached and refreshed silently afterwards, so this is rarely needed twice.
 
-Also exchanges that token for an OpenBao token, so `bao` is usable straight away
-rather than needing a second, differently-shaped login.
+--begin / --wait exist for callers that cannot sit on a blocking command - an
+agent driving this over `docker exec` gets the URL back from --begin within a
+second, relays it, then runs --wait. Both are safe to run when already logged in.
+
+Also exchanges the token for an OpenBao token, so `bao` is usable straight away.
 """
 import sys
 
@@ -17,18 +22,7 @@ sys.path.insert(0, "/opt/toolbox/lib")
 import toolbox_auth  # noqa: E402
 
 
-def main():
-    if "--help" in sys.argv or "-h" in sys.argv:
-        print(__doc__)
-        return 0
-
-    force = "--force" in sys.argv
-    token = None if force else toolbox_auth.get_token(interactive=False)
-    if token is None:
-        token = toolbox_auth.get_token(force_login=force)
-    else:
-        print("Already authenticated.", file=sys.stderr)
-
+def bao(token):
     # Non-fatal: the edge token is the important one, and someone may legitimately
     # have no OpenBao access at all.
     role = toolbox_auth.bao_login(token)
@@ -36,7 +30,60 @@ def main():
         print(f"OpenBao: logged in as {role}.", file=sys.stderr)
     else:
         print("OpenBao: not logged in (argocd is unaffected).", file=sys.stderr)
+
+
+def already(token):
+    print("Already authenticated.", file=sys.stderr)
+    bao(token)
     return 0
+
+
+def begin():
+    token = toolbox_auth.get_token(interactive=False)
+    if token:
+        return already(token)
+    pending = toolbox_auth.begin_device_flow()
+    # URL first and on its own line, so it can be grabbed with `head -1`.
+    print(pending["url"])
+    print(f"code {pending['user_code']} - expires in 5 minutes", file=sys.stderr)
+    return 0
+
+
+def wait():
+    token = toolbox_auth.get_token(interactive=False)
+    if token:
+        return already(token)
+    pending = toolbox_auth._read_pending()
+    if not pending:
+        print("toolbox: no login in progress - run 'toolbox-login --begin' first", file=sys.stderr)
+        return 1
+    tok = toolbox_auth.wait_device_flow(pending)
+    token = toolbox_auth.save_token(tok, toolbox_auth._read_cache())
+    print("Authenticated.", file=sys.stderr)
+    bao(token)
+    return 0
+
+
+def interactive(force):
+    token = None if force else toolbox_auth.get_token(interactive=False)
+    if token:
+        return already(token)
+    token = toolbox_auth.get_token(force_login=force)
+    print("Authenticated.", file=sys.stderr)
+    bao(token)
+    return 0
+
+
+def main():
+    a = sys.argv[1:]
+    if "--help" in a or "-h" in a:
+        print(__doc__)
+        return 0
+    if "--begin" in a:
+        return begin()
+    if "--wait" in a:
+        return wait()
+    return interactive("--force" in a)
 
 
 if __name__ == "__main__":
