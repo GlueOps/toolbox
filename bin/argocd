@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# argocd, with the edge token attached.
+#
+# The token `argocd login --sso` would obtain is a Dex id_token, and ArgoCD accepts
+# the toolbox audience (allowedAudiences), so one token satisfies both the edge and
+# ArgoCD itself - `argocd login` is unnecessary. Setting it fresh per call also means
+# a long-lived shell never goes stale.
+#
+# --no-login: never start a device flow from here. A browser prompt appearing in the
+# middle of someone's command (or inside a pipeline) is worse than a clear error.
+set -euo pipefail
+if ! ARGOCD_AUTH_TOKEN="$(toolbox-token --no-login)"; then
+    echo "toolbox: not authenticated. Run 'toolbox-login' first." >&2
+    exit 1
+fi
+export ARGOCD_AUTH_TOKEN
+exec /usr/local/bin/argocd.real "$@"
