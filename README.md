@@ -57,7 +57,7 @@ The one thing you can't do is authenticate. Login is a device flow: a human open
 a URL and approves with GitHub. Start it, **give the URL to the person you're
 working for**, wait for them, then run whatever you were asked.
 
-**You need the cluster's captain domain**, e.g. `nonprod.jupiter.onglueops.rocks`.
+**You need the cluster's captain domain**, e.g. `prod.foobar.onglueops.com`.
 It is not in this repo and you cannot guess it. If it wasn't given to you, ask for
 it before starting — everything below depends on it.
 
@@ -118,7 +118,7 @@ docker exec toolbox bash -lc 'bao kv list secret/'
 
 | Variable | Default | |
 |---|---|---|
-| `TOOLBOX_CAPTAIN_DOMAIN` | — | **Required.** e.g. `nonprod.example.onglueops.rocks` |
+| `TOOLBOX_CAPTAIN_DOMAIN` | — | **Required.** e.g. `prod.foobar.onglueops.com` |
 | `TOOLBOX_CLIENT_ID` | `toolbox` | Dex client used to mint the token |
 | `TOOLBOX_DEX_URL` | `https://dex.$DOMAIN` | |
 | `TOOLBOX_BAO_UPSTREAM` | `https://vault.$DOMAIN` | |
