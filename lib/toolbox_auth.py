@@ -52,21 +52,33 @@ def log(msg):
     print(msg, file=sys.stderr)
 
 
+# A freshly started container can lose its first DNS lookup or two while the
+# resolver settles, and an agent driving this runs --begin the instant the
+# container is up. Failing on the first miss sent one straight into twenty
+# seconds of network debugging; retrying briefly makes that a non-event.
+TRANSIENT_RETRIES = 6
+TRANSIENT_BACKOFF = 1.0
+
+
 def _post(path, data):
     body = urllib.parse.urlencode(data).encode()
-    req = urllib.request.Request(dex_url() + path, data=body, method="POST")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.status, json.load(r)
-    except urllib.error.HTTPError as e:
-        raw = e.read()
+    last = None
+    for attempt in range(TRANSIENT_RETRIES):
+        req = urllib.request.Request(dex_url() + path, data=body, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
-            return e.code, json.loads(raw)
-        except ValueError:
-            return e.code, {"error": raw.decode(errors="replace")[:200]}
-    except urllib.error.URLError as e:
-        sys.exit(f"toolbox: cannot reach Dex at {dex_url()}: {e.reason}")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.load(r)
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return e.code, json.loads(raw)
+            except ValueError:
+                return e.code, {"error": raw.decode(errors="replace")[:200]}
+        except (urllib.error.URLError, OSError) as e:
+            last = getattr(e, "reason", e)
+            time.sleep(TRANSIENT_BACKOFF)
+    sys.exit(f"toolbox: cannot reach Dex at {dex_url()} after {TRANSIENT_RETRIES} attempts: {last}")
 
 
 def _read_cache():

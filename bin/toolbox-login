@@ -43,8 +43,10 @@ def begin():
     if token:
         return already(token)
     pending = toolbox_auth.begin_device_flow()
-    # URL first and on its own line, so it can be grabbed with `head -1`.
-    print(pending["url"])
+    # URL first and on its own line, so it can be grabbed with `head -1`. Flushed
+    # before the stderr line, or a non-tty stdout buffers and the merged output
+    # an agent sees comes out in the wrong order.
+    print(pending["url"], flush=True)
     print(f"code {pending['user_code']} - expires in 5 minutes", file=sys.stderr)
     return 0
 
