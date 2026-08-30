@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.3](https://github.com/GlueOps/toolbox/compare/v0.0.2...v0.0.3) (2026-08-30)
+
+
+### Features
+
+* split login into --begin/--wait so agents get the URL in one command ([#19](https://github.com/GlueOps/toolbox/issues/19)) ([dee8416](https://github.com/GlueOps/toolbox/commit/dee84160a5770696ecda8bdd60b9f6ef35968f2a))
+
 ## [0.0.2](https://github.com/GlueOps/toolbox/compare/v0.0.1...v0.0.2) (2026-08-30)
 
 
