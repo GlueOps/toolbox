@@ -1,0 +1,14 @@
+# Sourced, not executed. Computes the environment both the entrypoint and any
+# later shell need, so `docker exec` into a running toolbox behaves like the
+# session the entrypoint set up - exec skips the ENTRYPOINT entirely, so without
+# this BAO_ADDR is unset there and bao silently talks to its own default address
+# instead of the local proxy.
+: "${TOOLBOX_CAPTAIN_DOMAIN:=}"
+if [ -n "$TOOLBOX_CAPTAIN_DOMAIN" ]; then
+    export ARGOCD_SERVER="${ARGOCD_SERVER:-argocd.${TOOLBOX_CAPTAIN_DOMAIN}}"
+    # Traefik terminates TLS and argocd-server runs insecure behind it, so the
+    # CLI has to speak gRPC-web rather than HTTP/2.
+    export ARGOCD_OPTS="${ARGOCD_OPTS:---grpc-web}"
+    export BAO_ADDR="${BAO_ADDR:-http://127.0.0.1:${TOOLBOX_PROXY_PORT:-8200}}"
+    export VAULT_ADDR="$BAO_ADDR"
+fi

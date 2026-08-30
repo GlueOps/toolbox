@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Authenticate the toolbox to the GlueOps platform.
+
+    toolbox-login            # only prompts if there is no usable token
+    toolbox-login --force    # always re-authenticate (e.g. switch account)
+
+Uses the OIDC device flow, so there is no loopback listener and no redirect URI:
+you open a URL on whatever machine has your browser and approve with GitHub. The
+token is cached and refreshed silently afterwards, so this is rarely needed twice.
+
+Also exchanges that token for an OpenBao token, so `bao` is usable straight away
+rather than needing a second, differently-shaped login.
+"""
+import sys
+
+sys.path.insert(0, "/opt/toolbox/lib")
+import toolbox_auth  # noqa: E402
+
+
+def main():
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        return 0
+
+    force = "--force" in sys.argv
+    token = None if force else toolbox_auth.get_token(interactive=False)
+    if token is None:
+        token = toolbox_auth.get_token(force_login=force)
+    else:
+        print("Already authenticated.", file=sys.stderr)
+
+    # Non-fatal: the edge token is the important one, and someone may legitimately
+    # have no OpenBao access at all.
+    role = toolbox_auth.bao_login(token)
+    if role:
+        print(f"OpenBao: logged in as {role}.", file=sys.stderr)
+    else:
+        print("OpenBao: not logged in (argocd is unaffected).", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

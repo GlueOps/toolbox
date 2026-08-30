@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# argocd, with credentials for BOTH the edge and ArgoCD itself.
+#
+# These are two different headers and each side reads only its own:
+#
+#   ARGOCD_AUTH_TOKEN  -> "Token: <jwt>"           ArgoCD reads this
+#   -H "Authorization" -> "Authorization: Bearer"  oauth2-proxy reads this
+#
+# Sending only the env var gets a login redirect from the edge, which surfaces as
+# "rpc error: unexpected EOF". Sending only -H gets past the edge but leaves
+# Token: empty, so ArgoCD answers "Unauthenticated: no session information".
+# It is the same Dex token in both; ArgoCD accepts it because the platform lists
+# the toolbox audience in allowedAudiences.
+set -euo pipefail
+if ! TOKEN="$(toolbox-token --no-login)"; then
+    echo "toolbox: not authenticated. Run 'toolbox-login' first." >&2
+    exit 1
+fi
+export ARGOCD_AUTH_TOKEN="$TOKEN"
+exec /usr/local/bin/argocd.real -H "Authorization: Bearer ${TOKEN}" "$@"

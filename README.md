@@ -1,1 +1,200 @@
-# template
+# GlueOps Toolbox
+
+The platform CLIs in one container, already wired up to authenticate. Developers
+don't install `argocd`, `bao`, or anything else locally — and they don't need
+`kubectl` or cluster access.
+
+```bash
+docker run -it --rm \
+  -e TOOLBOX_CAPTAIN_DOMAIN=<your-captain-domain> \
+  -v glueops-toolbox:/home/toolbox/.config/glueops \
+  ghcr.io/glueops/toolbox:latest
+```
+
+You'll be given a URL to open and approve with GitHub. After that:
+
+```bash
+argocd app list
+bao kv get secret/my-app
+```
+
+No flags, no `argocd login`, no `bao login`. Both CLIs behave normally.
+
+> Mount the named volume. Without it the login is thrown away when the container
+> exits and you re-authenticate every run.
+
+## Why a container
+
+Everything on a GlueOps cluster sits behind oauth2-proxy, which expects a browser
+session cookie. CLIs don't have one, so out of the box every request is answered
+with a login redirect. Getting past that needs a token, and — for OpenBao — a
+header on every single invocation that no shell wrapper can place reliably.
+
+The container handles all of it, so the CLIs are just the CLIs.
+
+## Commands
+
+| | |
+|---|---|
+| `argocd …` | ArgoCD CLI. Authenticated per-invocation, so a long shell never goes stale. |
+| `bao …` | OpenBao CLI, pointed at a local proxy that attaches your token. |
+| `toolbox-login` | Authenticate. Runs automatically on an interactive start. |
+| `toolbox-login --force` | Re-authenticate, e.g. to switch accounts. |
+| `toolbox-token` | Print the raw token, for scripting. |
+
+## For AI agents
+
+You can drive this container to reach a GlueOps cluster's `argocd` and `bao`. You
+already know those CLIs; this section is only about getting authenticated, which
+is the part that isn't obvious.
+
+The one thing you can't do is authenticate. Login is a device flow: a human opens
+a URL and approves with GitHub. Start it, **give the URL to the person you're
+working for**, wait for them, then run whatever you were asked.
+
+**Run detached, not `docker run -it`.** You have no TTY, so an interactive
+container gives you nothing to type into and no way to read the URL back out:
+
+```bash
+docker run -d --name toolbox \
+  -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
+  -e TOOLBOX_BAO_ROLES=reader \
+  -v glueops-toolbox:/home/toolbox/.config/glueops \
+  ghcr.io/glueops/toolbox:latest sleep 3600
+```
+
+Without a TTY the entrypoint skips its automatic login, which is what you want —
+you drive it in the next step.
+
+**Log in in the background and relay the URL.** `toolbox-login` blocks until the
+human approves:
+
+```bash
+docker exec toolbox toolbox-login > /tmp/login.log 2>&1 &
+sleep 4
+cat /tmp/login.log
+```
+
+Show them the URL and the code, and stop. Don't poll silently — they can't approve
+something they haven't been shown. When they confirm, read the log again:
+`Authenticated.` means you're through, and a second line reports whether the
+OpenBao login also succeeded.
+
+`Already authenticated.` with no URL means the cached volume still holds a valid
+token. That's success — carry on. Codes expire after five minutes; if one lapses,
+just run `toolbox-login` again.
+
+**Use a login shell for commands.** `docker exec` bypasses the ENTRYPOINT, and the
+CLIs are configured in `/etc/toolbox-env.sh`, which login shells source:
+
+```bash
+docker exec toolbox bash -lc 'argocd app list'
+docker exec toolbox bash -lc 'bao kv list secret/'
+```
+
+`docker exec toolbox argocd app list` — without `bash -lc` — will not work.
+
+**Rules.**
+
+- **Never print the token.** `toolbox-token` emits a live credential, and you don't
+  need to read it — the wrappers pass it for you.
+- **Default to `TOOLBOX_BAO_ROLES=reader`** unless asked to change something. It's
+  enforced server-side: writes return `403 permission denied`.
+- **Don't mutate anything unasked** — `argocd app sync`, `bao kv put` and friends
+  act on live infrastructure.
+- **Clean up with `docker rm -f toolbox`,** but leave the volume: it holds the
+  login, so the human isn't asked to approve again next time.
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `TOOLBOX_CAPTAIN_DOMAIN` | — | **Required.** e.g. `nonprod.example.onglueops.rocks` |
+| `TOOLBOX_CLIENT_ID` | `toolbox` | Dex client used to mint the token |
+| `TOOLBOX_DEX_URL` | `https://dex.$DOMAIN` | |
+| `TOOLBOX_BAO_UPSTREAM` | `https://vault.$DOMAIN` | |
+| `ARGOCD_SERVER` | `argocd.$DOMAIN` | |
+| `TOOLBOX_PROXY_PORT` | `8200` | Loopback port the OpenBao proxy listens on |
+| `TOOLBOX_TOKEN_CACHE` | `~/.config/glueops/toolbox-token.json` | |
+| `TOOLBOX_BAO_ROLES` | `editor,reader` | OpenBao roles tried at login, in order |
+| `TOOLBOX_BAO_AUTH_PATH` | `jwt` | OpenBao auth mount the CLI logs in through |
+
+## How it works
+
+**Getting a token.** `toolbox-login` runs the OIDC **device flow** against Dex.
+That matters: there's no loopback listener and no redirect URI, so it works from
+inside a container whose browser is on the host — a `localhost:8085` callback
+would not. Dex issues a refresh token alongside, so the browser step happens once
+rather than daily.
+
+**ArgoCD** accepts that token directly (it's configured with the toolbox audience
+in `allowedAudiences`), so one token satisfies both the edge and ArgoCD itself.
+
+It needs to go in **two** headers, because each side reads only its own:
+
+| | header | read by |
+|---|---|---|
+| `ARGOCD_AUTH_TOKEN` | `Token: <jwt>` | ArgoCD |
+| `-H "Authorization: …"` | `Authorization: Bearer <jwt>` | oauth2-proxy |
+
+Send only the env var and the edge sees no credential, redirects to a login page,
+and the CLI reports `rpc error: unexpected EOF`. Send only `-H` and you get past
+the edge with `Token:` empty, so ArgoCD answers `Unauthenticated: no session
+information`. The wrapper sets both, fresh on every call.
+
+**OpenBao** can't work that way. Its own credential travels in `X-Vault-Token`,
+and the edge needs an `Authorization` bearer as well. `bao` has a `-header` flag,
+but it must sit after the subcommand and before any positional argument —
+
+```
+bao kv get -header="…" secret/foo     ✓
+bao kv get secret/foo -header="…"     ✗   flags must precede positional arguments
+bao -header="…" kv get secret/foo     ✗   no global flag position
+```
+
+— and since `bao kv list secret` is indistinguishable from a subcommand plus a
+path, no wrapper can place it correctly in general. So instead the container runs
+a small loopback proxy that adds the header and forwards upstream, and points
+`BAO_ADDR` at it. `bao` then needs no flags at all and scripts work unmodified.
+
+`toolbox-login` also exchanges your Dex token for an OpenBao token, so `bao` is
+usable immediately. It posts to the login endpoint directly rather than running
+`bao login -method=jwt`, because the OpenBao CLI registers no `jwt` method — only
+`oidc`, which is the browser redirect flow. Roles are tried most-privileged first
+(`TOOLBOX_BAO_ROLES`, default `editor,reader`); which one you actually get is
+decided by the role's `bound_claims`.
+
+Set `TOOLBOX_BAO_ROLES=reader` to deliberately hold only read access for a
+session. The CLI roles live on their own `auth/jwt` mount, separate from the web
+UI's `auth/oidc`, which is why they can share the names of the policies they
+grant.
+
+The proxy binds to `127.0.0.1` only — it attaches your credential to whatever it
+forwards, so it must never be exposed.
+
+## Platforms
+
+Built for `linux/amd64` and `linux/arm64`, so Apple Silicon is native — no
+emulation, no Rosetta.
+
+## Releases
+
+Tagged with [release-please](https://github.com/googleapis/release-please) from
+conventional commits on `main`. A release tag publishes
+`ghcr.io/glueops/toolbox:<version>`, `:<major>.<minor>` and `:latest`, all
+multi-arch. Pin a version in anything automated; `:latest` is fine for people.
+
+## Building
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t toolbox .
+```
+
+`TARGETARCH` comes from BuildKit and has no default on purpose: a default would
+silently put amd64 binaries in an arm64 image when built natively on a Mac.
+
+## Cluster prerequisites
+
+The platform must have a public Dex client matching `TOOLBOX_CLIENT_ID`, that
+audience accepted by oauth2-proxy (`oidc_extra_audiences`) and by ArgoCD
+(`allowedAudiences`), and jwt-type roles in OpenBao bound to it.
