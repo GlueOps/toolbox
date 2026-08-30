@@ -2,7 +2,7 @@
 # Bring up the local OpenBao proxy, then hand over to the user's command.
 set -euo pipefail
 
-: "${TOOLBOX_CAPTAIN_DOMAIN:?set TOOLBOX_CAPTAIN_DOMAIN, e.g. nonprod.example.onglueops.rocks}"
+: "${TOOLBOX_CAPTAIN_DOMAIN:?set TOOLBOX_CAPTAIN_DOMAIN, e.g. prod.foobar.onglueops.com}"
 
 # shellcheck source=/dev/null
 . /etc/toolbox-env.sh
