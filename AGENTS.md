@@ -53,23 +53,42 @@ docker run -d --name toolbox \
 Without a TTY the entrypoint skips its automatic login, which is what you want —
 you drive it in the next step.
 
-**Log in in the background and relay the URL.** `toolbox-login` blocks until the
-human approves:
+**Start the login, show the URL, then wait it out.** `toolbox-login` polls Dex on
+its own until the human approves, so you don't need to hand the task back and
+wait to be told — surface the URL, then block on the same process and carry on the
+moment it succeeds.
 
 ```bash
-docker exec toolbox toolbox-login > /tmp/login.log 2>&1 &
+docker exec -d toolbox sh -c 'toolbox-login > /tmp/login.log 2>&1'
 sleep 4
-cat /tmp/login.log
+docker exec toolbox cat /tmp/login.log   # the URL and code
 ```
 
-Show them the URL and the code, and stop. Don't poll silently — they can't approve
-something they haven't been shown. When they confirm, read the log again:
+Use `docker exec -d`, not `... &`. Detaching inside the container means the login
+survives your shell exiting — a backgrounded `docker exec` dies with the shell that
+started it, and each command you run is usually a fresh shell.
+
+**Print the URL in your reply, not only in tool output**, before you start waiting.
+They cannot approve a code they have not seen, and if it is buried in a command
+trace they will not see it.
+
+Then poll until it completes — the code is good for five minutes:
+
+```bash
+for _ in $(seq 1 60); do
+  docker exec toolbox grep -q 'Authenticated\.' /tmp/login.log && break
+  sleep 5
+done
+docker exec toolbox cat /tmp/login.log
+```
+
 `Authenticated.` means you're through, and a second line reports whether the
-OpenBao login also succeeded.
+OpenBao login also succeeded. Now run whatever you were asked — no second prompt
+needed.
 
 `Already authenticated.` with no URL means the cached volume still holds a valid
-token. That's success — carry on. Codes expire after five minutes; if one lapses,
-just run `toolbox-login` again.
+token — skip straight to the command. Codes expire after five minutes; if one
+lapses, run `toolbox-login` again and show the new URL.
 
 **Use a login shell for commands.** `docker exec` bypasses the ENTRYPOINT, and the
 CLIs are configured in `/etc/toolbox-env.sh`, which login shells source:
