@@ -4,6 +4,10 @@ The platform CLIs in one container, already wired up to authenticate. Developers
 don't install `argocd`, `bao`, or anything else locally — and they don't need
 `kubectl` or cluster access.
 
+> **AI agents: read [For AI agents](#for-ai-agents) first, and don't use the
+> command below.** It needs a terminal you don't have. That section has the
+> sequence that works.
+
 ```bash
 docker run -it --rm \
   -e TOOLBOX_CAPTAIN_DOMAIN=<your-captain-domain> \
@@ -46,11 +50,16 @@ The container handles all of it, so the CLIs are just the CLIs.
 
 You can drive this container to reach a GlueOps cluster's `argocd` and `bao`. You
 already know those CLIs; this section is only about getting authenticated, which
-is the part that isn't obvious.
+is the part that isn't obvious. Follow it end to end before running anything — the
+whole sequence is here, so nobody should have to explain it to you in a prompt.
 
 The one thing you can't do is authenticate. Login is a device flow: a human opens
 a URL and approves with GitHub. Start it, **give the URL to the person you're
 working for**, wait for them, then run whatever you were asked.
+
+**You need the cluster's captain domain**, e.g. `nonprod.jupiter.onglueops.rocks`.
+It is not in this repo and you cannot guess it. If it wasn't given to you, ask for
+it before starting — everything below depends on it.
 
 **Run detached, not `docker run -it`.** You have no TTY, so an interactive
 container gives you nothing to type into and no way to read the URL back out:
