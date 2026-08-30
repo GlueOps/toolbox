@@ -46,15 +46,19 @@ need_docker() {
 }
 
 # -------------------------------------------------------------- environment --
-# The host's own trust store. If the host's tools work through a TLS-intercepting
-# proxy, the interception CA is in here - so the container trusts what the host
-# trusts and nobody has to go looking for a .crt file.
+# The host's own trust store. Env vars first: an environment that exports
+# CURL_CA_BUNDLE or SSL_CERT_FILE is explicitly saying "this is the bundle that
+# works here" - through a TLS-intercepting proxy, that file already carries the
+# interception CA. System paths are the fallback. NODE_EXTRA_CA_CERTS may hold
+# only the extra CA rather than a full bundle; fine either way, since the
+# container loads it in addition to its own system store, never instead of it.
 host_ca_bundle() {
     local f
-    for f in "${SSL_CERT_FILE:-}" "${NIX_SSL_CERT_FILE:-}" \
+    for f in "${CURL_CA_BUNDLE:-}" "${SSL_CERT_FILE:-}" "${REQUESTS_CA_BUNDLE:-}" \
+             "${NIX_SSL_CERT_FILE:-}" "${NODE_EXTRA_CA_CERTS:-}" \
              /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
              /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem; do
-        if [ -n "$f" ] && [ -r "$f" ]; then printf '%s' "$f"; return 0; fi
+        if [ -n "$f" ] && [ -f "$f" ] && [ -r "$f" ]; then printf '%s' "$f"; return 0; fi
     done
     return 0
 }

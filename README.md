@@ -59,7 +59,9 @@ The container handles all of it, so the CLIs are just the CLIs.
 the environment so you don't have to. `up` starts dockerd if it's installed but
 not running, pulls the image if missing, passes proxy settings through by name,
 mounts the host's own CA bundle so the container trusts whatever the host trusts
-(a TLS-intercepting proxy included), and uses host networking when the proxy is
+— honouring `CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` or
+`NODE_EXTRA_CA_CERTS` when the environment sets one, before the system paths —
+and uses host networking when the proxy is
 bound to the host's loopback. It then checks egress from inside the container
 against a small public endpoint — not your cluster, which may be slow or private
 — and if the bridge network has none, recreates the container with host
