@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.4](https://github.com/GlueOps/toolbox/compare/v0.0.3...v0.0.4) (2026-08-30)
+
+
+### Features
+
+* host-side `toolbox` driver — detect the environment instead of documenting it ([#22](https://github.com/GlueOps/toolbox/issues/22)) ([37f1e4e](https://github.com/GlueOps/toolbox/commit/37f1e4ecb1b24e9c4ced6171ce15764f66f6a891))
+
 ## [0.0.3](https://github.com/GlueOps/toolbox/compare/v0.0.2...v0.0.3) (2026-08-30)
 
 
