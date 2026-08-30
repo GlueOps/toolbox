@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# toolbox - host-side driver for ghcr.io/glueops/toolbox.
+#
+#   toolbox up <captain-domain>   start the container and print the login URL
+#   toolbox wait                  wait for the human to approve (exit 2 = call again)
+#   toolbox <command...>          run a command in the container: toolbox argocd app list
+#   toolbox shell                 interactive shell in the container
+#   toolbox status                is it running, is it logged in
+#   toolbox down                  remove the container (the login cache volume is kept)
+#
+# `up` deals with the environment so nobody has to: starts dockerd if it is
+# installed but not running, pulls the image if missing, passes proxy settings
+# through, trusts whatever CAs the host trusts, uses host networking when the
+# proxy is bound to the host's loopback, and falls back to host networking if
+# the bridge network turns out not to reach Dex. It prints what it decided.
+set -euo pipefail
+
+IMAGE="${TOOLBOX_IMAGE:-ghcr.io/glueops/toolbox:latest}"
+NAME="${TOOLBOX_CONTAINER:-toolbox}"
+VOLUME="${TOOLBOX_VOLUME:-glueops-toolbox}"
+DOMAIN=""
+
+log() { printf 'toolbox: %s\n' "$*" >&2; }
+die() { log "$*"; exit 1; }
+
+usage() {
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2
+    exit "${1:-1}"
+}
+
+# ---------------------------------------------------------------- docker ----
+need_docker() {
+    command -v docker >/dev/null 2>&1 || die "docker is not installed"
+    docker info >/dev/null 2>&1 && return 0
+    if command -v dockerd >/dev/null 2>&1 && [ "$(id -u)" = 0 ]; then
+        log "docker daemon is not running; starting dockerd (log: /tmp/toolbox-dockerd.log)"
+        nohup dockerd >/tmp/toolbox-dockerd.log 2>&1 &
+        local i
+        for i in $(seq 1 40); do
+            docker info >/dev/null 2>&1 && return 0
+            sleep 1
+        done
+        die "dockerd did not come up within 40s - see /tmp/toolbox-dockerd.log"
+    fi
+    die "cannot connect to the docker daemon - is it running, and can this user reach it?"
+}
+
+# -------------------------------------------------------------- environment --
+# The host's own trust store. If the host's tools work through a TLS-intercepting
+# proxy, the interception CA is in here - so the container trusts what the host
+# trusts and nobody has to go looking for a .crt file.
+host_ca_bundle() {
+    local f
+    for f in "${SSL_CERT_FILE:-}" "${NIX_SSL_CERT_FILE:-}" \
+             /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+             /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem; do
+        if [ -n "$f" ] && [ -r "$f" ]; then printf '%s' "$f"; return 0; fi
+    done
+    return 0
+}
+
+proxy_url() {
+    printf '%s' "${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
+}
+
+# A proxy on the host's loopback is unreachable from the bridge network, and
+# host.docker.internal does not help: it resolves to the bridge address, where a
+# loopback-bound listener does not answer. Host networking is the only way in.
+proxy_is_loopback() {
+    local u h
+    u=$(proxy_url); [ -n "$u" ] || return 1
+    h=${u#*://}; h=${h#*@}; h=${h%%/*}
+    case "$h" in \[*\]*) h=${h#[}; h=${h%%]*} ;; *) h=${h%%:*} ;; esac
+    case "$h" in localhost|127.*|::1|0.0.0.0) return 0 ;; esac
+    return 1
+}
+
+# With host networking the container's proxy binds a real host port.
+free_port() {
+    local p=8200
+    while (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; do p=$((p + 1)); done
+    printf '%s' "$p"
+}
+
+# ----------------------------------------------------------------- container -
+run_container() {  # $1 = bridge|host
+    local net=$1 v ca port
+    local args=(-d --name "$NAME" -v "$VOLUME:/home/toolbox/.config/glueops"
+                -e "TOOLBOX_CAPTAIN_DOMAIN=$DOMAIN")
+
+    # Passed by name so values never land in argv or the transcript: proxy URLs
+    # often carry credentials.
+    for v in TOOLBOX_BAO_ROLES TOOLBOX_BAO_AUTH_PATH TOOLBOX_CLIENT_ID TOOLBOX_DEX_URL \
+             TOOLBOX_BAO_UPSTREAM TOOLBOX_WAIT_SECONDS TOOLBOX_IDLE_SECONDS \
+             HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; do
+        if [ -n "${!v:-}" ]; then args+=(-e "$v"); fi
+    done
+    # The container talks to its own proxy on loopback; that must never go via
+    # the egress proxy. Not secret, so set explicitly.
+    args+=(-e "NO_PROXY=${NO_PROXY:-${no_proxy:-}}${NO_PROXY:+,}${no_proxy:+,}127.0.0.1,localhost")
+    args+=(-e "no_proxy=${no_proxy:-${NO_PROXY:-}}${no_proxy:+,}${NO_PROXY:+,}127.0.0.1,localhost")
+
+    ca=$(host_ca_bundle)
+    if [ -n "$ca" ]; then
+        args+=(-v "$ca:/toolbox-host-ca.crt:ro" -e TOOLBOX_EXTRA_CA=/toolbox-host-ca.crt)
+    fi
+
+    if [ "$net" = host ]; then
+        port=$(free_port)
+        args+=(--network host -e "TOOLBOX_PROXY_PORT=$port")
+        log "network: host (proxy port $port)"
+    else
+        log "network: bridge"
+    fi
+    [ -n "$ca" ] && log "trusting host CA bundle: $ca"
+
+    docker run "${args[@]}" "$IMAGE" >/dev/null
+}
+
+# Can the container reach Dex? Asked before --begin, which would happily hand
+# back a cached URL or token without ever touching the network. Bounded so a
+# blackholed network fails in seconds, not minutes.
+reachable() {
+    docker exec "$NAME" timeout 30 toolbox-login --check >/dev/null 2>&1
+}
+
+begin() {
+    docker exec "$NAME" toolbox-login --begin
+}
+
+container_domain() {
+    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$NAME" 2>/dev/null \
+        | sed -n 's/^TOOLBOX_CAPTAIN_DOMAIN=//p'
+}
+
+cmd_up() {
+    DOMAIN="${1:-${TOOLBOX_CAPTAIN_DOMAIN:-}}"
+    [ -n "$DOMAIN" ] || die "usage: toolbox up <captain-domain>   (e.g. prod.foobar.onglueops.com)"
+    need_docker
+
+    if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)" = true ]; then
+        if [ "$(container_domain)" = "$DOMAIN" ]; then
+            log "reusing the running container"
+            begin; return
+        fi
+        log "running container is for $(container_domain); replacing it"
+    fi
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        log "pulling $IMAGE"
+        docker pull -q "$IMAGE" >/dev/null
+    fi
+
+    local net=bridge
+    proxy_is_loopback && net=host
+    run_container "$net"
+
+    if reachable; then begin; return; fi
+
+    if [ "$net" = bridge ] && [ "$(uname -s)" = Linux ]; then
+        log "could not reach Dex from the bridge network; retrying with host networking"
+        docker rm -f "$NAME" >/dev/null 2>&1 || true
+        run_container host
+        if reachable; then begin; return; fi
+    fi
+
+    log "could not reach https://dex.$DOMAIN from inside the container. Container log:"
+    docker logs "$NAME" >&2 2>&1 || true
+    die "check that the captain domain is right and that this host can reach it (curl https://dex.$DOMAIN/healthz)"
+}
+
+cmd_wait() {
+    docker exec "$NAME" toolbox-login --wait
+}
+
+cmd_exec() {
+    local tty=()
+    if [ -t 0 ] && [ -t 1 ]; then tty=(-it); fi
+    # bash -lc so /etc/toolbox-env.sh is sourced; arguments go through "$@" so
+    # quoting survives intact.
+    docker exec "${tty[@]}" "$NAME" bash -lc 'exec "$@"' bash "$@"
+}
+
+cmd_status() {
+    local st
+    st=$(docker inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null || echo "absent")
+    printf 'container: %s' "$st"
+    [ "$st" = running ] && printf ' (%s)' "$(container_domain)"
+    printf '\n'
+    if [ "$st" = running ]; then
+        if docker exec "$NAME" toolbox-token --no-login >/dev/null 2>&1; then
+            echo "login: authenticated"
+        else
+            echo "login: not authenticated - run 'toolbox up <domain>' for a URL"
+        fi
+    fi
+}
+
+case "${1:-}" in
+    up)      shift; cmd_up "$@" ;;
+    wait)    cmd_wait ;;
+    shell)   docker exec -it "$NAME" bash -l ;;
+    status)  cmd_status ;;
+    down)    docker rm -f "$NAME" >/dev/null 2>&1 && log "removed $NAME (volume $VOLUME kept)" ;;
+    -h|--help|help|"") usage 0 ;;
+    *)       cmd_exec "$@" ;;
+esac

@@ -76,7 +76,7 @@ def _post(path, data):
         req = urllib.request.Request(dex_url() + path, data=body, method="POST")
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
-            with urllib.request.urlopen(req, timeout=30, context=_ssl()) as r:
+            with urllib.request.urlopen(req, timeout=10, context=_ssl()) as r:
                 return r.status, json.load(r)
         except urllib.error.HTTPError as e:
             raw = e.read()
@@ -88,6 +88,24 @@ def _post(path, data):
             last = getattr(e, "reason", e)
             time.sleep(TRANSIENT_BACKOFF)
     sys.exit(f"toolbox: cannot reach Dex at {dex_url()} after {TRANSIENT_RETRIES} attempts: {last}")
+
+
+def probe():
+    """Can this container reach Dex at all? A GET of the discovery document with
+    the same trust store and retry budget as everything else. Separate from
+    --begin on purpose: --begin returns a cached URL or token without touching
+    the network, so it cannot tell a working network from a broken one."""
+    url = dex_url() + "/.well-known/openid-configuration"
+    last = None
+    for _ in range(3):
+        try:
+            with urllib.request.urlopen(url, timeout=8, context=_ssl()) as r:
+                return r.status == 200
+        except (urllib.error.URLError, OSError) as e:
+            last = getattr(e, "reason", e)
+            time.sleep(1)
+    log(f"toolbox: cannot reach {url}: {last}")
+    return False
 
 
 def _read_cache():

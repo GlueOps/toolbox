@@ -5,6 +5,7 @@
     toolbox-login --begin    # print the URL and return immediately (idempotent)
     toolbox-login --wait     # wait for approval; exits 2 after ~90s if not yet, just rerun
     toolbox-login --force    # discard the cached identity first (combine with --begin)
+    toolbox-login --check    # exit 0 if Dex is reachable from here, 1 if not
 
 Uses the OIDC device flow, so there is no loopback listener and no redirect URI:
 you open a URL on whatever machine has your browser and approve with GitHub. The
@@ -50,12 +51,11 @@ def begin(force):
         # is still starting, and --wait does it anyway.
         return already(None, exchange=False)
     pending = toolbox_auth.begin_device_flow(force=force)
-    # URL first and on its own line, so it can be grabbed with `head -1`. Flushed
-    # before the stderr line, or a non-tty stdout buffers and the merged output
-    # an agent sees comes out in the wrong order.
-    print(pending["url"], flush=True)
+    # URL first and on its own line, so it can be grabbed with `head -1`. Both
+    # lines on stdout: across two streams the order an agent sees is arbitrary.
     left = max(0, int(pending["expires_at"] - time.time()))
-    print(f"code {pending['user_code']} - expires in {left // 60} min {left % 60} s", file=sys.stderr)
+    print(pending["url"])
+    print(f"code {pending['user_code']} - expires in {left // 60} min {left % 60} s", flush=True)
     return 0
 
 
@@ -104,6 +104,8 @@ def main():
         print(__doc__)
         return 0
     force = "--force" in a
+    if "--check" in a:
+        return 0 if toolbox_auth.probe() else 1
     if "--begin" in a:
         return begin(force)
     if "--wait" in a:
