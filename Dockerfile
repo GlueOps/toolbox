@@ -40,6 +40,10 @@ RUN set -eux; \
 COPY lib/ /opt/toolbox/lib/
 COPY bin/ /usr/local/bin/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY bin/toolbox-env /etc/toolbox-env.sh
+# `docker exec` bypasses the ENTRYPOINT, so wire the same environment into shells
+# started that way - interactive ones read .bashrc, login ones read profile.d.
+RUN printf '. /etc/toolbox-env.sh\n' > /etc/profile.d/toolbox.sh
 RUN chmod +x /usr/local/bin/toolbox-token /usr/local/bin/toolbox-proxy \
              /usr/local/bin/toolbox-login /usr/local/bin/argocd \
              /usr/local/bin/entrypoint.sh
@@ -52,6 +56,7 @@ RUN chmod +x /usr/local/bin/toolbox-token /usr/local/bin/toolbox-proxy \
 # a named volume over this path (see README).
 RUN useradd -m -u 1000 -s /bin/bash toolbox \
  && mkdir -p /home/toolbox/.config/glueops \
+ && printf '. /etc/toolbox-env.sh\n' >> /home/toolbox/.bashrc \
  && chown -R toolbox:toolbox /home/toolbox
 USER toolbox
 WORKDIR /home/toolbox
