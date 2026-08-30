@@ -1,23 +1,29 @@
 # GlueOps Toolbox
 
-> **AI agents:** you have no TTY, so skip the quickstart below. Run this now —
-> it is the complete happy path, and you don't need to read anything else first.
-> Open [AGENTS.md](AGENTS.md) only if a step fails.
+> **AI agents:** run this now — it is the complete happy path, and you don't
+> need to read anything else first. Open [AGENTS.md](AGENTS.md) only if a step
+> fails.
 >
 > ```bash
-> docker run -d --name toolbox -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
->   -v glueops-toolbox:/home/toolbox/.config/glueops ghcr.io/glueops/toolbox:latest &&
-> docker exec toolbox toolbox-login --begin
+> ./toolbox up <captain-domain>        # prints a URL: write it into your reply
+> ./toolbox wait && ./toolbox argocd app list   # then, in the same turn
 > ```
 >
-> Write the URL it prints into your reply, then in the same turn run
-> `docker exec toolbox toolbox-login --wait && docker exec toolbox bash -lc 'argocd app list'`
-> — if `--wait` says `still waiting` (exit 2), run it again. Every later command
-> is `docker exec toolbox bash -lc '...'`.
+> If `wait` says `still waiting` (exit 2), run it again. Every later command is
+> `./toolbox <command>`. `up` handles dockerd, proxies and CAs itself and prints
+> what it decided — don't investigate the environment first.
 
 The platform CLIs in one container, already wired up to authenticate. Developers
 don't install `argocd`, `bao`, or anything else locally — and they don't need
 `kubectl` or cluster access.
+
+```bash
+git clone https://github.com/GlueOps/toolbox && cd toolbox
+./toolbox up <your-captain-domain>     # prints a login URL
+./toolbox shell                        # once approved
+```
+
+Or without the wrapper:
 
 ```bash
 docker run -it --rm \
@@ -47,7 +53,40 @@ header on every single invocation that no shell wrapper can place reliably.
 
 The container handles all of it, so the CLIs are just the CLIs.
 
-## Commands
+## The `toolbox` wrapper
+
+`./toolbox` is a small host-side script that drives the container and deals with
+the environment so you don't have to. `up` starts dockerd if it's installed but
+not running, pulls the image if missing, passes proxy settings through by name,
+mounts the host's own CA bundle so the container trusts whatever the host trusts
+— honouring `CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` or
+`NODE_EXTRA_CA_CERTS` when the environment sets one, before the system paths —
+and uses host networking when the proxy is
+bound to the host's loopback. It then checks egress from inside the container
+against a small public endpoint — not your cluster, which may be slow or private
+— and if the bridge network has none, recreates the container with host
+networking; a TLS failure there means an interception CA the host doesn't have,
+and it says so. It prints each decision.
+
+It also notices when it's being driven by an agent (Claude Code sets
+`CLAUDECODE`; otherwise, no terminal): then `up` prints the next step after the
+URL and `wait` returns after ~90s so it fits under a tool's command timeout. At a
+terminal, `up` opens the browser and `wait` blocks until you've approved.
+
+| | |
+|---|---|
+| `./toolbox up <domain>` | start (or reuse) the container, print the login URL |
+| `./toolbox wait` | wait for approval; exit 2 means call again |
+| `./toolbox <command…>` | run it in the container: `./toolbox bao kv list secret/` |
+| `./toolbox shell` | interactive shell |
+| `./toolbox status` | running? logged in? |
+| `./toolbox down` | remove the container; the login volume is kept |
+
+Overrides: `TOOLBOX_IMAGE`, `TOOLBOX_CONTAINER`, `TOOLBOX_VOLUME`,
+`TOOLBOX_PROBE_URL` (default `https://www.google.com/generate_204`), plus every
+container variable below is passed through if set.
+
+## Commands inside the container
 
 | | |
 |---|---|
