@@ -1,7 +1,8 @@
 # GlueOps Toolbox
 
-> **AI agents:** you have no TTY, so skip the quickstart below. This is your
-> whole happy path — full instructions in [AGENTS.md](AGENTS.md):
+> **AI agents:** you have no TTY, so skip the quickstart below. Run this now —
+> it is the complete happy path, and you don't need to read anything else first.
+> Open [AGENTS.md](AGENTS.md) only if a step fails.
 >
 > ```bash
 > docker run -d --name toolbox -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
