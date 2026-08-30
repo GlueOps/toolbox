@@ -46,7 +46,6 @@ container gives you nothing to type into and no way to read the URL back out:
 ```bash
 docker run -d --name toolbox \
   -e TOOLBOX_CAPTAIN_DOMAIN=<captain-domain> \
-  -e TOOLBOX_BAO_ROLES=reader \
   -v glueops-toolbox:/home/toolbox/.config/glueops \
   ghcr.io/glueops/toolbox:latest sleep 3600
 ```
@@ -86,9 +85,14 @@ docker exec toolbox bash -lc 'bao kv list secret/'
 
 - **Never print the token.** `toolbox-token` emits a live credential, and you don't
   need to read it — the wrappers pass it for you.
-- **Default to `TOOLBOX_BAO_ROLES=reader`** unless asked to change something. It's
-  enforced server-side: writes return `403 permission denied`.
-- **Don't mutate anything unasked** — `argocd app sync`, `bao kv put` and friends
-  act on live infrastructure.
+- **You get OpenBao `editor` by default**, which can create, update and delete
+  secrets. That is deliberate, so you can do the work without a second login — but
+  it means nothing stops you at the door.
+- **So don't mutate anything you weren't asked to.** `bao kv put`, `bao kv delete`,
+  `argocd app sync` and friends act on live infrastructure. Read first; change only
+  what was actually requested; say what you changed.
+- **`TOOLBOX_BAO_ROLES=reader` constrains you** to read and list, enforced
+  server-side — writes return `403 permission denied`. Worth setting on the run
+  command when you know the task is read-only, so a mistake cannot land.
 - **Clean up with `docker rm -f toolbox`,** but leave the volume: it holds the
   login, so the human isn't asked to approve again next time.
