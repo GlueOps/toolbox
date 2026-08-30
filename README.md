@@ -53,7 +53,8 @@ The container handles all of it, so the CLIs are just the CLIs.
 | `ARGOCD_SERVER` | `argocd.$DOMAIN` | |
 | `TOOLBOX_PROXY_PORT` | `8200` | Loopback port the OpenBao proxy listens on |
 | `TOOLBOX_TOKEN_CACHE` | `~/.config/glueops/toolbox-token.json` | |
-| `TOOLBOX_BAO_ROLES` | `editor-jwt,reader-jwt` | OpenBao roles tried at login, in order |
+| `TOOLBOX_BAO_ROLES` | `editor,reader` | OpenBao roles tried at login, in order |
+| `TOOLBOX_BAO_AUTH_PATH` | `jwt` | OpenBao auth mount the CLI logs in through |
 
 ## How it works
 
@@ -97,8 +98,13 @@ a small loopback proxy that adds the header and forwards upstream, and points
 usable immediately. It posts to the login endpoint directly rather than running
 `bao login -method=jwt`, because the OpenBao CLI registers no `jwt` method — only
 `oidc`, which is the browser redirect flow. Roles are tried most-privileged first
-(`TOOLBOX_BAO_ROLES`, default `editor-jwt,reader-jwt`); which one you actually get
-is decided by the role's `bound_claims`.
+(`TOOLBOX_BAO_ROLES`, default `editor,reader`); which one you actually get is
+decided by the role's `bound_claims`.
+
+Set `TOOLBOX_BAO_ROLES=reader` to deliberately hold only read access for a
+session. The CLI roles live on their own `auth/jwt` mount, separate from the web
+UI's `auth/oidc`, which is why they can share the names of the policies they
+grant.
 
 The proxy binds to `127.0.0.1` only — it attaches your credential to whatever it
 forwards, so it must never be exposed.

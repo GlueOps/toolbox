@@ -202,14 +202,21 @@ def get_token(force_login=False, interactive=True):
 # This posts to the login endpoint directly rather than using `bao login`: the
 # OpenBao CLI registers no `jwt` auth method (only `oidc`, which is the browser
 # redirect flow), so `-method=jwt` fails with "Unknown auth method".
+#
+# The CLI has its own mount (auth/jwt) separate from the web UI's (auth/oidc), so
+# its roles can carry the same names as the policies they grant.
 
 
 def bao_roles():
     return [
         r.strip()
-        for r in _env("TOOLBOX_BAO_ROLES", "editor-jwt,reader-jwt").split(",")
+        for r in _env("TOOLBOX_BAO_ROLES", "editor,reader").split(",")
         if r.strip()
     ]
+
+
+def bao_auth_path():
+    return _env("TOOLBOX_BAO_AUTH_PATH", "jwt").strip("/")
 
 
 def bao_addr():
@@ -231,7 +238,7 @@ def bao_login(id_token):
     for role in bao_roles():
         body = json.dumps({"role": role, "jwt": id_token}).encode()
         req = urllib.request.Request(
-            bao_addr() + "/v1/auth/oidc/login", data=body, method="POST"
+            f"{bao_addr()}/v1/auth/{bao_auth_path()}/login", data=body, method="POST"
         )
         req.add_header("Content-Type", "application/json")
         try:
