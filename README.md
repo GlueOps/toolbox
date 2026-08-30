@@ -1,8 +1,9 @@
 # GlueOps Toolbox
 
-> **AI agents: read [AGENTS.md](AGENTS.md) before running anything.** The
-> quickstart below needs a terminal you don't have; AGENTS.md has the sequence
-> that works and the one input you have to ask a human for.
+> **AI agents:** read [AGENTS.md](AGENTS.md) and run its "Start here" block. Don't
+> clone this repo, don't read the source, and don't use the quickstart below — it
+> needs a terminal you don't have. Fetch that one file and go:
+> `https://raw.githubusercontent.com/GlueOps/toolbox/main/AGENTS.md`
 
 The platform CLIs in one container, already wired up to authenticate. Developers
 don't install `argocd`, `bao`, or anything else locally — and they don't need
