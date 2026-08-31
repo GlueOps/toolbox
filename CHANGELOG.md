@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.5](https://github.com/GlueOps/toolbox/compare/v0.0.4...v0.0.5) (2026-08-31)
+
+
+### Documentation
+
+* record two known issues operators will hit ([#25](https://github.com/GlueOps/toolbox/issues/25)) ([3e4b39d](https://github.com/GlueOps/toolbox/commit/3e4b39dae8aa30e0cf6ab8002caa713d50d6094c))
+
 ## [0.0.4](https://github.com/GlueOps/toolbox/compare/v0.0.3...v0.0.4) (2026-08-30)
 
 
