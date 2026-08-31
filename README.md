@@ -168,6 +168,38 @@ grant.
 The proxy binds to `127.0.0.1` only — it attaches your credential to whatever it
 forwards, so it must never be exposed.
 
+## Known issues
+
+**An ArgoCD permission error can look like a login problem.** The `argocd` CLI
+speaks gRPC-web over root paths (`/application.ApplicationService/List` and
+similar). On the platform those paths are matched by the ingress that carries the
+edge's `errors-redirect` plugin, which rewrites any 401-403 response into a
+redirect to the login page. That plugin sits outside ArgoCD, so it catches
+ArgoCD's own responses too: an ordinary RBAC denial ("you don't have permission
+for this app") is rewritten into a login redirect, and the CLI reports
+
+    rpc error: code = Unknown desc = unexpected EOF
+
+Re-authenticating will not help, because you were never unauthenticated. If
+`toolbox-login` succeeds and the same command still fails this way, suspect
+permissions rather than your session, and check the same operation in the ArgoCD
+web UI, which reports the real error. The `/api/v1` REST paths are unaffected and
+return a normal status code.
+
+**Your token is visible to other processes in the container.** The `argocd`
+wrapper passes the edge credential on the command line (`-H "Authorization:
+Bearer …"`) and in the environment (`ARGOCD_AUTH_TOKEN`), because the ArgoCD CLI
+has no way to take a header from anywhere else — `ARGOCD_OPTS` rejects any value
+containing spaces. Anything else running inside the container can therefore read
+your token from `/proc/<pid>/cmdline` or `/proc/<pid>/environ`, and `cmdline` is
+world-readable. That token opens the edge, ArgoCD, and OpenBao.
+
+Treat the container as trusted: do not run untrusted code, unvetted argocd
+plugins, or third-party scripts inside it while you are logged in. `bao` is not
+affected — it reaches OpenBao through the loopback proxy, which adds the header
+server-side and keeps it off the command line.
+
+
 ## Platforms
 
 Built for `linux/amd64` and `linux/arm64`, so Apple Silicon is native — no
