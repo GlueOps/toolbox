@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# tempo-cli, pointed at Tempo through Grafana's datasource proxy.
+#
+# Three things differ from promtool/logcli and are handled here so callers do not
+# have to know them:
+#
+#   1. Headers use `Key=Value`, not `Key: Value`. Parsed with strings.Cut on the
+#      first '=', so base64 padding in a JWT is safe.
+#   2. `search`/`search-tags`/`search-tag-values`/`metrics` take a bare host and
+#      build the URL from --path-prefix; `trace-id` has no --path-prefix and takes
+#      a full URL instead. Both forms are constructed below.
+#   3. --use-grpc must NOT be used: headers then travel as gRPC metadata and never
+#      reach oauth2-proxy, so the edge rejects the request.
+set -euo pipefail
+if ! TOKEN="$(toolbox-token --no-login)"; then
+    echo "toolbox: not authenticated. Run 'toolbox-login' first." >&2; exit 1
+fi
+for a in "$@"; do
+    if [ "$a" = "--use-grpc" ]; then
+        echo "toolbox: --use-grpc cannot work through the edge (headers become gRPC metadata)." >&2
+        exit 1
+    fi
+done
+HOST="grafana.${TOOLBOX_CAPTAIN_DOMAIN}"
+UID_TEMPO="$(grafana-ds tempo)"
+PREFIX="/api/datasources/proxy/uid/${UID_TEMPO}"
+HDRS=(--header "Authorization=Bearer ${TOKEN}" --header "X-JWT-Assertion=${TOKEN}")
+
+# `query api <sub> ...` is the only subtree that talks to a server.
+if [ "${1:-}" = "query" ] && [ "${2:-}" = "api" ]; then
+    sub="${3:-}"; shift 3 || true
+    case "$sub" in
+      trace-id)
+        exec /usr/local/bin/tempo-cli.real query api trace-id "${HDRS[@]}" \
+             "https://${HOST}${PREFIX}" "$@" ;;
+      "")
+        exec /usr/local/bin/tempo-cli.real query api --help ;;
+      *)
+        exec /usr/local/bin/tempo-cli.real query api "$sub" --secure \
+             --path-prefix "${PREFIX}" "${HDRS[@]}" "${HOST}" "$@" ;;
+    esac
+fi
+exec /usr/local/bin/tempo-cli.real "$@"

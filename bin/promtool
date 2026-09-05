@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# promtool, pointed at Thanos through Grafana's datasource proxy.
+#
+# Two headers, because each side reads only its own: Authorization is consumed by
+# oauth2-proxy at the edge, X-JWT-Assertion by Grafana's [auth.jwt]. Sending only
+# one gets a 302 to the login page.
+#
+# `query`/`debug` subcommands take a <server> argument; everything else (check,
+# push, test) is local and passed straight through.
+set -euo pipefail
+case "${1:-}" in
+  query|debug)
+    if ! TOKEN="$(toolbox-token --no-login)"; then
+        echo "toolbox: not authenticated. Run 'toolbox-login' first." >&2; exit 1
+    fi
+    sub="$1"; shift
+    exec /usr/local/bin/promtool.real "$sub" "$@" \
+        --header "Authorization: Bearer ${TOKEN}" \
+        --header "X-JWT-Assertion: ${TOKEN}"
+    ;;
+  *)
+    exec /usr/local/bin/promtool.real "$@"
+    ;;
+esac

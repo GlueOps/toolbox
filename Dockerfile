@@ -4,6 +4,9 @@ FROM debian:12-slim
 
 ARG ARGOCD_VERSION=v3.3.12
 ARG OPENBAO_VERSION=2.4.4
+ARG PROMETHEUS_VERSION=3.14.0
+ARG LOKI_VERSION=3.7.7
+ARG TEMPO_VERSION=3.0.3
 
 # Supplied automatically by BuildKit for the platform being built. Deliberately
 # left without a default: a default would silently produce an arm64 image full of
@@ -37,6 +40,37 @@ RUN set -eux; \
     rm -f /tmp/bao.tar.gz; \
     /usr/local/bin/bao version >/dev/null
 
+# promtool (metrics, alert state and rule listings) - queries Thanos through Grafana's
+# datasource proxy. Only promtool is kept; the tarball also ships the server binaries.
+RUN set -eux; \
+    curl -fsSL -o /tmp/prom.tar.gz \
+      "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-${TARGETARCH}.tar.gz"; \
+    tar -xzf /tmp/prom.tar.gz --strip-components=1 -C /usr/local/bin --wildcards '*/promtool'; \
+    mv /usr/local/bin/promtool /usr/local/bin/promtool.real; \
+    chmod +x /usr/local/bin/promtool.real; \
+    rm -f /tmp/prom.tar.gz; \
+    /usr/local/bin/promtool.real --version >/dev/null
+
+# logcli (logs). Ships as a zip of a single arch-suffixed binary.
+RUN set -eux; \
+    curl -fsSL -o /tmp/logcli.zip \
+      "https://github.com/grafana/loki/releases/download/v${LOKI_VERSION}/logcli-linux-${TARGETARCH}.zip"; \
+    (cd /tmp && jar xf logcli.zip 2>/dev/null || python3 -c "import zipfile;zipfile.ZipFile('/tmp/logcli.zip').extractall('/tmp')"); \
+    mv "/tmp/logcli-linux-${TARGETARCH}" /usr/local/bin/logcli.real; \
+    chmod +x /usr/local/bin/logcli.real; \
+    rm -f /tmp/logcli.zip; \
+    /usr/local/bin/logcli.real --version >/dev/null
+
+# tempo-cli (traces). `query api` is a TraceQL client; the rest of the binary is
+# backend tooling we do not use.
+RUN set -eux; \
+    curl -fsSL -o /tmp/tempo.tar.gz \
+      "https://github.com/grafana/tempo/releases/download/v${TEMPO_VERSION}/tempo_${TEMPO_VERSION}_linux_${TARGETARCH}.tar.gz"; \
+    tar -xzf /tmp/tempo.tar.gz -C /usr/local/bin tempo-cli; \
+    mv /usr/local/bin/tempo-cli /usr/local/bin/tempo-cli.real; \
+    chmod +x /usr/local/bin/tempo-cli.real; \
+    rm -f /tmp/tempo.tar.gz
+
 COPY lib/ /opt/toolbox/lib/
 COPY bin/ /usr/local/bin/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -46,6 +80,8 @@ COPY bin/toolbox-env /etc/toolbox-env.sh
 RUN printf '. /etc/toolbox-env.sh\n' > /etc/profile.d/toolbox.sh
 RUN chmod +x /usr/local/bin/toolbox-token /usr/local/bin/toolbox-proxy \
              /usr/local/bin/toolbox-login /usr/local/bin/argocd \
+             /usr/local/bin/promtool /usr/local/bin/logcli \
+             /usr/local/bin/tempo-cli /usr/local/bin/grafana-ds \
              /usr/local/bin/entrypoint.sh
 
 # Unprivileged, with the token-cache directory created up front and owned by the

@@ -12,6 +12,12 @@
 > If `wait` says `still waiting` (exit 2), run it again. Every later command is
 > `./toolbox <command>`. `up` handles dockerd, proxies and CAs itself and prints
 > what it decided — don't investigate the environment first.
+>
+> **Do not delete or modify data.** These credentials carry write access well
+> beyond what the commands suggest — see [Known risks](#known-risks). Treat
+> everything here as read-only: query, inspect and report. Do not run `bao kv
+> delete`/`destroy`, `argocd app delete`, Grafana `DELETE` calls, or push to any
+> datasource. If a task seems to need a destructive action, stop and ask.
 
 The platform CLIs in one container, already wired up to authenticate. Developers
 don't install `argocd`, `bao`, or anything else locally — and they don't need
@@ -96,6 +102,10 @@ container variable below is passed through if set.
 | `toolbox-login --begin` / `--wait` | The same login in two halves: print the URL and return (idempotent), then wait for approval — about 90 s per call, exit 2 means call again. For callers that can't sit on a blocking command. |
 | `toolbox-login --force` | Re-authenticate, e.g. to switch accounts. |
 | `toolbox-token` | Print the raw token, for scripting. |
+| `promtool …` | Prometheus CLI, pointed at Thanos. Metrics, plus alert state and rule listings. |
+| `logcli …` | Loki CLI. Log queries and `--tail`. |
+| `tempo-cli query api …` | Tempo CLI. TraceQL search and trace lookup. |
+| `grafana-ds <type>` | Print a datasource UID (`prometheus`/`loki`/`tempo`); used by the wrappers. |
 
 
 ## Configuration
@@ -168,6 +178,67 @@ grant.
 The proxy binds to `127.0.0.1` only — it attaches your credential to whatever it
 forwards, so it must never be exposed.
 
+**Grafana, Loki, Thanos and Tempo** need no proxy. `promtool`, `logcli` and
+`tempo-cli` all accept arbitrary headers, so each wrapper simply sends two:
+
+| header | read by |
+|---|---|
+| `Authorization: Bearer <jwt>` | oauth2-proxy at the edge |
+| `X-JWT-Assertion: <jwt>` | Grafana's `[auth.jwt]` |
+
+Two headers are needed because the edge consumes `Authorization` for itself and
+Traefik's forwardauth deletes it before Grafana sees it. `X-JWT-Assertion` is in
+no `authResponseHeaders` list, so it passes through untouched — which is why this
+needs no bearer-preserving middleware, unlike `argocd`.
+
+Queries go through Grafana's datasource proxy rather than to Loki/Thanos/Tempo
+directly, so there is one edge host and one credential for everything. The
+wrappers resolve the datasource UID at run time (`grafana-ds`), since Grafana
+generates UIDs per cluster.
+
+`tempo-cli` differs in three ways the wrapper hides: headers are `Key=Value` not
+`Key: Value`; `search` takes a bare host plus `--path-prefix` while `trace-id`
+takes a full URL; and `--use-grpc` is refused, because headers would then travel
+as gRPC metadata and never reach the edge.
+
+## Known risks
+
+Everything below is **known and accepted**, not a bug report. It is written down
+because the capabilities are wider than the commands imply, and nothing in the
+platform currently constrains them.
+
+**Your token can write to the observability datasources, not just read them.**
+Grafana's datasource proxy is a full pass-through: it forwards `POST`, `PUT` and
+`DELETE` to the datasource exactly as it forwards `GET`, and Grafana has no
+method-level control over it. So the same credential that runs a PromQL query can
+also reach Loki's ingestion endpoint:
+
+    POST /api/datasources/proxy/uid/<loki>/loki/api/v1/push
+
+Verified: that request reaches Loki's push handler (it answers with Loki's own
+validation error, not a Grafana block).
+
+**Writes to Loki, Thanos and Tempo are durable.** All three are backed by S3
+object storage, so anything written survives pod restarts and full cluster
+rebuilds. Deleting pods does not undo it — the objects have to be removed from the
+bucket. Log lines in particular carry no provenance: Loki records what was pushed,
+not who pushed it, so an injected line is indistinguishable from an ingested one.
+Ingestion limits bound this (`reject_old_samples_max_age: 168h`, rate limits,
+`max_streams_per_user`) but do not prevent it.
+
+**No audit trail.** Grafana OSS does not log datasource-proxy requests per user,
+so there is no record of who queried or wrote what.
+
+**This is not privilege escalation.** Anyone holding a toolbox token already has
+ArgoCD and OpenBao access; they are trusted operators. The point is that the
+datasource write path is a side effect of enabling CLI authentication, not
+something anyone deliberately granted — so treat these tools as read-only by
+convention, because nothing enforces it.
+
+If that convention is ever not enough, the enforcement point is the edge: a
+Traefik router rule matching `Method(`GET`)` on `/api/datasources/proxy/` would
+make the read-only intent real. It is deliberately not done today.
+
 ## Known issues
 
 **An ArgoCD permission error can look like a login problem.** The `argocd` CLI
@@ -226,3 +297,9 @@ silently put amd64 binaries in an arm64 image when built natively on a Mac.
 The platform must have a public Dex client matching `TOOLBOX_CLIENT_ID`, that
 audience accepted by oauth2-proxy (`oidc_extra_audiences`) and by ArgoCD
 (`allowedAudiences`), and jwt-type roles in OpenBao bound to it.
+
+For `promtool`/`logcli`/`tempo-cli`, Grafana additionally needs `[auth.jwt]`
+enabled with `header_name = X-JWT-Assertion` and the same audience in
+`expect_claims` (GlueOps/k8s-monitoring-helm). Without it those three fail with a
+302 to the login page; `argocd` and `bao` are unaffected, so an older cluster
+degrades rather than breaking.
