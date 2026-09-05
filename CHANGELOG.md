@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.6](https://github.com/GlueOps/toolbox/compare/v0.0.5...v0.0.6) (2026-09-05)
+
+
+### Features
+
+* add promtool, logcli and tempo-cli for querying the observability stack ([#27](https://github.com/GlueOps/toolbox/issues/27)) ([48dddb7](https://github.com/GlueOps/toolbox/commit/48dddb78ab2f985bea4eb560e6734149c015c8cf))
+
 ## [0.0.5](https://github.com/GlueOps/toolbox/compare/v0.0.4...v0.0.5) (2026-08-31)
 
 
