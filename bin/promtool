@@ -5,20 +5,59 @@
 # oauth2-proxy at the edge, X-JWT-Assertion by Grafana's [auth.jwt]. Sending only
 # one gets a 302 to the login page.
 #
-# `query`/`debug` subcommands take a <server> argument; everything else (check,
-# push, test) is local and passed straight through.
+# Only `query instant` and `query range` accept --header, so they are the only
+# subcommands that can carry a credential and therefore the only ones that can
+# reach this cluster. For them the wrapper also resolves the datasource UID and
+# inserts the <server> positional, so callers never build the proxy URL by hand --
+# the same job logcli's --addr and tempo-cli's --path-prefix do.
+#
+# `query series`, `query labels` and every `debug` subcommand take no --header:
+# their requests would arrive at the edge with no credential and be redirected to
+# the login page, so aiming them at this cluster is refused rather than left to
+# fail as a confusing 302. An explicit http(s) server is always passed through
+# untouched, for promtool against something else.
+#
+# Everything else (check, push, test, tsdb) is local and passed straight through.
 set -euo pipefail
-case "${1:-}" in
-  query|debug)
-    if ! TOKEN="$(toolbox-token --no-login)"; then
-        echo "toolbox: not authenticated. Run 'toolbox-login' first." >&2; exit 1
-    fi
-    sub="$1"; shift
-    exec /usr/local/bin/promtool.real "$sub" "$@" \
-        --header "Authorization: Bearer ${TOKEN}" \
-        --header "X-JWT-Assertion: ${TOKEN}"
-    ;;
-  *)
-    exec /usr/local/bin/promtool.real "$@"
-    ;;
-esac
+
+# Is any argument already a server URL? An explicit one always wins.
+has_server() {
+    local a
+    for a in "$@"; do
+        case "$a" in http://*|https://*) return 0 ;; esac
+    done
+    return 1
+}
+
+if [ "${1:-}" = "query" ]; then
+    sub="${2:-}"
+    # No subcommand, or asking for help: there is nothing to point at a server.
+    case "$sub" in ""|-*) exec /usr/local/bin/promtool.real "$@" ;; esac
+    shift 2
+    case "$sub" in
+        instant|range)
+            if ! TOKEN="$(toolbox-token --no-login)"; then
+                echo "toolbox: not authenticated. Run 'toolbox-login' first." >&2; exit 1
+            fi
+            hdrs=(--header "Authorization: Bearer ${TOKEN}" --header "X-JWT-Assertion: ${TOKEN}")
+            if has_server "$@"; then
+                exec /usr/local/bin/promtool.real query "$sub" "$@" "${hdrs[@]}"
+            fi
+            server="https://grafana.${TOOLBOX_CAPTAIN_DOMAIN}/api/datasources/proxy/uid/$(grafana-ds prometheus)"
+            exec /usr/local/bin/promtool.real query "$sub" "$server" "$@" "${hdrs[@]}"
+            ;;
+        *)
+            has_server "$@" && exec /usr/local/bin/promtool.real query "$sub" "$@"
+            echo "toolbox: 'promtool query $sub' takes no --header, so it cannot authenticate to this cluster. Use 'query instant' or 'query range' (labels are also available as 'logcli labels'), or pass an explicit server." >&2
+            exit 1
+            ;;
+    esac
+fi
+
+if [ "${1:-}" = "debug" ]; then
+    has_server "${@:2}" && exec /usr/local/bin/promtool.real "$@"
+    echo "toolbox: 'promtool debug' takes no --header, so it cannot authenticate to this cluster. Pass an explicit server to use it against something else." >&2
+    exit 1
+fi
+
+exec /usr/local/bin/promtool.real "$@"

@@ -102,7 +102,7 @@ container variable below is passed through if set.
 | `toolbox-login --begin` / `--wait` | The same login in two halves: print the URL and return (idempotent), then wait for approval — about 90 s per call, exit 2 means call again. For callers that can't sit on a blocking command. |
 | `toolbox-login --force` | Re-authenticate, e.g. to switch accounts. |
 | `toolbox-token` | Print the raw token, for scripting. |
-| `promtool …` | Prometheus CLI, pointed at Thanos. Metrics, plus alert state and rule listings. |
+| `promtool query instant\|range …` | Prometheus CLI, pointed at Thanos. Metrics, plus alert state. The server argument is filled in for you. `query series`/`labels` and `debug` take no `--header`, so they cannot reach the cluster. |
 | `logcli …` | Loki CLI. Log queries and `--tail`. |
 | `tempo-cli query api …` | Tempo CLI. TraceQL search and trace lookup. |
 | `grafana-ds <type>` | Print a datasource UID (`prometheus`/`loki`/`tempo`); used by the wrappers. |
@@ -195,6 +195,14 @@ Queries go through Grafana's datasource proxy rather than to Loki/Thanos/Tempo
 directly, so there is one edge host and one credential for everything. The
 wrappers resolve the datasource UID at run time (`grafana-ds`), since Grafana
 generates UIDs per cluster.
+
+`promtool` differs in one way the wrapper hides: only `query instant` and
+`query range` accept `--header`. Those two get the `<server>` positional filled in
+with the proxy URL. `query series`, `query labels` and every `debug` subcommand
+take no `--header`, so a request from them reaches the edge with no credential and
+is redirected to the login page; the wrapper refuses those against this cluster
+rather than letting them fail as a confusing 302, and passes an explicit
+`http(s)` server through untouched.
 
 `tempo-cli` differs in three ways the wrapper hides: headers are `Key=Value` not
 `Key: Value`; `search` takes a bare host plus `--path-prefix` while `trace-id`
