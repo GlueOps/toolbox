@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.7](https://github.com/GlueOps/toolbox/compare/v0.0.6...v0.0.7) (2026-09-05)
+
+
+### Bug Fixes
+
+* fill in promtool's server argument, refuse the paths that cannot authenticate ([#29](https://github.com/GlueOps/toolbox/issues/29)) ([d22018d](https://github.com/GlueOps/toolbox/commit/d22018d61460a06c47445d6ce181629d7eb0c0ae))
+
 ## [0.0.6](https://github.com/GlueOps/toolbox/compare/v0.0.5...v0.0.6) (2026-09-05)
 
 
