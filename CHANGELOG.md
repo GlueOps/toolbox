@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.0.9](https://github.com/GlueOps/toolbox/compare/v0.0.8...v0.0.9) (2026-10-06)
+
+
+### Features
+
+* agents hand the device login to the human and end their turn; wait gets past only approval ([ae8ef56](https://github.com/GlueOps/toolbox/commit/ae8ef56c644c6c482e83e0a4f563920e1a4a04ed))
+* show ArgoCD's rendered manifest diff and risk warnings in propose PRs ([#40](https://github.com/GlueOps/toolbox/issues/40)) ([ae8ef56](https://github.com/GlueOps/toolbox/commit/ae8ef56c644c6c482e83e0a4f563920e1a4a04ed))
+* up and reauth fast-forward the toolbox's own clone of main and run again with the new version ([ae8ef56](https://github.com/GlueOps/toolbox/commit/ae8ef56c644c6c482e83e0a4f563920e1a4a04ed))
+* up pulls the image every time and recreates an idle container on an older one ([ae8ef56](https://github.com/GlueOps/toolbox/commit/ae8ef56c644c6c482e83e0a4f563920e1a4a04ed))
+
 ## [0.0.8](https://github.com/GlueOps/toolbox/compare/v0.0.7...v0.0.8) (2026-10-06)
 
 
