@@ -1,6 +1,6 @@
 # GlueOps toolbox - the platform CLIs, preconfigured to authenticate through the
 # oauth2-proxy edge. Developers run this instead of installing anything locally.
-FROM debian:12-slim
+FROM debian:13-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
 ARG ARGOCD_VERSION=v3.3.12
 ARG OPENBAO_VERSION=2.4.4
